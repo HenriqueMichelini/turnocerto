@@ -1,0 +1,34 @@
+{
+  "name": "turnocerto",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "node --test tests/deployment-config.test.mjs && node scripts/run-browser-integration.mjs preview && node scripts/run-browser-integration.mjs production --grep \"preview fixture is available only in the preview environment\"",
+    "test:integration": "npm run build && npm test",
+    "preview:local": "npm run build && npm run db:preview:local && wrangler pages dev dist --ip 127.0.0.1 --port 8788 --persist-to .wrangler/local-state --d1 DB=00000000-0000-4000-8000-000000000002 --binding APP_ENV=preview",
+    "db:preview:local": "node scripts/check-deployment-config.mjs preview && wrangler d1 migrations apply DB --env preview --local --persist-to .wrangler/local-state && wrangler d1 execute DB --env preview --local --persist-to .wrangler/local-state --file=./db/seed-preview.sql",
+    "db:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && wrangler d1 migrations apply DB --env preview --remote && wrangler d1 execute DB --env preview --remote --file=./db/seed-preview.sql",
+    "db:production": "node scripts/check-deployment-config.mjs production --require-real-id && wrangler d1 migrations apply DB --env production --remote",
+    "deploy:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && npm run build && wrangler pages deploy dist --branch preview",
+    "deploy:production": "node scripts/check-deployment-config.mjs production --require-real-id && npm run build && wrangler pages deploy dist --branch main"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260924.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.6.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "wrangler": "4.139.0"
+  }
+}

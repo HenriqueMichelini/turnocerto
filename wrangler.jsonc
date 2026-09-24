@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "turnocerto",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-09-24",
+  "vars": {
+    "APP_ENV": "production"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "turnocerto-production",
+      "database_id": "00000000-0000-4000-8000-000000000001",
+      "migrations_dir": "db/migrations"
+    }
+  ],
+  "env": {
+    "production": {
+      "vars": {
+        "APP_ENV": "production"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "turnocerto-production",
+          "database_id": "00000000-0000-4000-8000-000000000001",
+          "migrations_dir": "db/migrations"
+        }
+      ]
+    },
+    "preview": {
+      "vars": {
+        "APP_ENV": "preview"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "turnocerto-preview",
+          "database_id": "00000000-0000-4000-8000-000000000002",
+          "migrations_dir": "db/migrations"
+        }
+      ]
+    }
+  }
+}

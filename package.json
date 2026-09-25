@@ -17,7 +17,7 @@
     "db:production": "node scripts/check-deployment-config.mjs production --require-real-id && wrangler d1 migrations apply DB --config wrangler.api.jsonc --env production --remote",
     "deploy:api:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && npm run build:api && wrangler deploy --config wrangler.api.jsonc --env preview",
     "deploy:api:production": "node scripts/check-deployment-config.mjs production --require-real-id && npm run build:api && wrangler deploy --config wrangler.api.jsonc --env production",
-    "deploy:pages:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && node scripts/check-api-url.mjs && npm run build && wrangler pages deploy dist --config wrangler.jsonc --project-name turnocerto --branch preview",
+    "deploy:pages:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && node scripts/check-api-url.mjs && npm run build && wrangler pages deploy dist --project-name turnocerto --branch preview",
     "deploy:pages:production": "node scripts/check-deployment-config.mjs production --require-real-id && node scripts/check-api-url.mjs && npm run build && wrangler pages deploy dist --config wrangler.jsonc --project-name turnocerto --branch main",
     "deploy:preview": "node scripts/check-deployment-config.mjs preview --require-real-id && node scripts/check-api-url.mjs && npm run deploy:api:preview && npm run deploy:pages:preview",
     "deploy:production": "node scripts/check-deployment-config.mjs production --require-real-id && node scripts/check-api-url.mjs && npm run deploy:api:production && npm run deploy:pages:production"

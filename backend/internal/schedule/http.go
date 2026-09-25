@@ -31,6 +31,7 @@ type Schedule struct {
 	ID              string              `json:"id"`
 	Name            string              `json:"name"`
 	TimeZone        string              `json:"timeZone"`
+	Revision        string              `json:"-"`
 	ManagementSpace ManagementSpace     `json:"managementSpace"`
 	Participations  []WeekParticipation `json:"participations,omitempty"`
 }
@@ -216,6 +217,10 @@ func setCorsHeaders(headers http.Header, origin string) {
 }
 
 func writeStoreError(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrStaleScheduleEdit) {
+		writeError(response, http.StatusConflict, "stale_schedule_edit")
+		return
+	}
 	if errors.Is(err, ErrInvalidScheduleWeek) {
 		writeError(response, http.StatusBadRequest, "invalid_schedule_week")
 		return

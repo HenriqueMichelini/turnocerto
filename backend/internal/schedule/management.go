@@ -47,9 +47,8 @@ type SchedulingStore interface {
 	CreateSchedule(context.Context, string, string, Schedule) error
 	CreatePerson(context.Context, string, string, Person) error
 	UpdateScheduleTimeZone(context.Context, string, string, string, string) (Schedule, error)
-	CreateParticipation(context.Context, string, string, string, WeekParticipation) error
-	CreateWeeklyPattern(context.Context, string, string, string, string, WeeklyPattern) error
-	CreateDateException(context.Context, string, string, string, string, DateException) error
+	CreateParticipation(context.Context, string, string, string, WeekParticipation, string, string) error
+	SaveScheduleEdit(context.Context, string, string, string, string, ScheduleEdit, string) error
 }
 
 type TurnstileVerifier interface {
@@ -198,6 +197,11 @@ func (api *handler) createManagementSpace(response http.ResponseWriter, request 
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
+	scheduleRevision, err := newUUID()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
 	token, err := newManagementToken()
 	if err != nil {
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
@@ -208,6 +212,7 @@ func (api *handler) createManagementSpace(response http.ResponseWriter, request 
 		ID:              scheduleID,
 		Name:            payload.ScheduleName,
 		TimeZone:        payload.TimeZone,
+		Revision:        scheduleRevision,
 		ManagementSpace: managementSpace,
 	}
 	if err := api.managementStore.CreateManagementSpace(request.Context(), managementSpace, firstSchedule, tokenHash(token)); err != nil {
@@ -240,17 +245,15 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		route = "schedule"
 	case len(parts) == 4 && parts[1] == "schedules" && parts[3] == "participations":
 		route = "participations"
-	case len(parts) == 6 && parts[1] == "schedules" && parts[3] == "participations" && parts[5] == "patterns":
-		route = "patterns"
-	case len(parts) == 6 && parts[1] == "schedules" && parts[3] == "participations" && parts[5] == "exceptions":
-		route = "exceptions"
+	case len(parts) == 6 && parts[1] == "schedules" && parts[3] == "participations" && parts[5] == "edits":
+		route = "edits"
 	}
 	if route == "" && !replacingLink {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
 	spaceID := parts[0]
-	if !isUUID(spaceID) || (len(parts) >= 3 && parts[1] == "schedules" && !isUUID(parts[2])) || ((route == "patterns" || route == "exceptions") && !isUUID(parts[4])) {
+	if !isUUID(spaceID) || (len(parts) >= 3 && parts[1] == "schedules" && !isUUID(parts[2])) || (route == "edits" && !isUUID(parts[4])) {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
@@ -275,7 +278,7 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 	case "space", "schedule":
 		allowed = request.Method == http.MethodGet || request.Method == http.MethodPatch
 		allow = "GET, PATCH, OPTIONS"
-	case "people", "schedules", "participations", "patterns", "exceptions":
+	case "people", "schedules", "participations", "edits":
 		allowed = request.Method == http.MethodPost
 		allow = "POST, OPTIONS"
 	}
@@ -319,11 +322,9 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 			api.updateManagementSchedule(response, request, spaceID, parts[2], credentialHash)
 		}
 	case "participations":
-		api.createParticipation(response, request, spaceID, parts[2], credentialHash)
-	case "patterns":
-		api.createWeeklyPattern(response, request, spaceID, parts[2], parts[4], credentialHash)
-	case "exceptions":
-		api.createDateException(response, request, space, spaceID, parts[2], parts[4], credentialHash)
+		api.createParticipation(response, request, space, spaceID, parts[2], credentialHash)
+	case "edits":
+		api.saveScheduleEdit(response, request, space, spaceID, parts[2], parts[4], credentialHash)
 	}
 }
 
@@ -475,7 +476,12 @@ func (api *handler) createSchedule(response http.ResponseWriter, request *http.R
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
-	schedule := Schedule{ID: id, Name: payload.Name, TimeZone: payload.TimeZone, ManagementSpace: ManagementSpace{ID: spaceID}}
+	revision, err := newUUID()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	schedule := Schedule{ID: id, Name: payload.Name, TimeZone: payload.TimeZone, Revision: revision, ManagementSpace: ManagementSpace{ID: spaceID}}
 	if err := store.CreateSchedule(request.Context(), spaceID, credentialHash, schedule); err != nil {
 		writeStoreError(response, err)
 		return
@@ -518,7 +524,7 @@ func (api *handler) createPerson(response http.ResponseWriter, request *http.Req
 	}{Person: person})
 }
 
-func (api *handler) createParticipation(response http.ResponseWriter, request *http.Request, spaceID, scheduleID, credentialHash string) {
+func (api *handler) createParticipation(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, credentialHash string) {
 	var payload struct {
 		PersonID  string        `json:"personId"`
 		StartDate string        `json:"startDate"`
@@ -549,6 +555,16 @@ func (api *handler) createParticipation(response http.ResponseWriter, request *h
 			return
 		}
 	}
+	calendar, found := findSchedule(space, scheduleID)
+	if !found {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	nextRevision, err := newUUID()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
 	participation := WeekParticipation{
 		ID:                 participationID,
 		Person:             Person{ID: payload.PersonID},
@@ -561,55 +577,25 @@ func (api *handler) createParticipation(response http.ResponseWriter, request *h
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
-	if err := store.CreateParticipation(request.Context(), spaceID, scheduleID, credentialHash, participation); err != nil {
+	if err := store.CreateParticipation(request.Context(), spaceID, scheduleID, credentialHash, participation, calendar.Revision, nextRevision); err != nil {
 		writeStoreError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, struct {
 		Participation WeekParticipation `json:"participation"`
-	}{Participation: participation})
+		Revision      string            `json:"revision"`
+	}{Participation: participation, Revision: nextRevision})
 }
 
-func (api *handler) createWeeklyPattern(response http.ResponseWriter, request *http.Request, spaceID, scheduleID, participationID, credentialHash string) {
-	var pattern WeeklyPattern
-	if err := decodeJSONBody(request, maximumCreationBodySize, &pattern); err != nil {
-		writeJSONBodyError(response, err, "invalid_weekly_pattern")
+func (api *handler) saveScheduleEdit(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, participationID, credentialHash string) {
+	var edit ScheduleEdit
+	if err := decodeJSONBody(request, maximumCreationBodySize, &edit); err != nil {
+		writeJSONBodyError(response, err, "invalid_schedule_edit")
 		return
 	}
-	if validatePatternVersion(pattern) != nil {
-		writeError(response, http.StatusBadRequest, "invalid_weekly_pattern")
-		return
-	}
-	if pattern.ID == "" {
-		id, err := newUUID()
-		if err != nil {
-			writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
-			return
-		}
-		pattern.ID = id
-	}
-	store, ok := api.managementStore.(SchedulingStore)
-	if !ok {
-		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
-		return
-	}
-	if err := store.CreateWeeklyPattern(request.Context(), spaceID, scheduleID, participationID, credentialHash, pattern); err != nil {
-		writeStoreError(response, err)
-		return
-	}
-	writeJSON(response, http.StatusCreated, struct {
-		WeeklyPattern WeeklyPattern `json:"weeklyPattern"`
-	}{WeeklyPattern: pattern})
-}
-
-func (api *handler) createDateException(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, participationID, credentialHash string) {
-	var exception DateException
-	if err := decodeJSONBody(request, maximumRequestSize, &exception); err != nil {
-		writeJSONBodyError(response, err, "invalid_date_exception")
-		return
-	}
-	if err := ValidateDateException(exception); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_date_exception")
+	calendar, found := findSchedule(space, scheduleID)
+	if !found {
+		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
 	participation, found := findParticipation(space, scheduleID, participationID)
@@ -617,28 +603,47 @@ func (api *handler) createDateException(response http.ResponseWriter, request *h
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
-	if exception.Date < participation.ParticipationStart || (participation.ParticipationEnd != nil && exception.Date > *participation.ParticipationEnd) {
-		writeError(response, http.StatusBadRequest, "invalid_date_exception")
+	if edit.Revision != calendar.Revision {
+		writeError(response, http.StatusConflict, "stale_schedule_edit")
 		return
 	}
-	id, err := newUUID()
+	if err := ValidateScheduleEdit(calendar, participation, edit, time.Now()); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_schedule_edit")
+		return
+	}
+	for index := range edit.Dates {
+		id, err := newUUID()
+		if err != nil {
+			writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+			return
+		}
+		edit.Dates[index].ID = id
+	}
+	if edit.Mode == ScheduleEditRecurring {
+		id, err := newUUID()
+		if err != nil {
+			writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+			return
+		}
+		edit.PatternID = id
+	}
+	nextRevision, err := newUUID()
 	if err != nil {
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
-	exception.ID = id
 	store, ok := api.managementStore.(SchedulingStore)
 	if !ok {
 		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
 		return
 	}
-	if err := store.CreateDateException(request.Context(), spaceID, scheduleID, participationID, credentialHash, exception); err != nil {
+	if err := store.SaveScheduleEdit(request.Context(), spaceID, scheduleID, participationID, credentialHash, edit, nextRevision); err != nil {
 		writeStoreError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusCreated, struct {
-		DateException DateException `json:"dateException"`
-	}{DateException: exception})
+	writeJSON(response, http.StatusOK, struct {
+		Revision string `json:"revision"`
+	}{Revision: nextRevision})
 }
 
 func findParticipation(space ManagementSpaceView, scheduleID, participationID string) (WeekParticipation, bool) {
@@ -653,6 +658,15 @@ func findParticipation(space ManagementSpaceView, scheduleID, participationID st
 		}
 	}
 	return WeekParticipation{}, false
+}
+
+func findSchedule(space ManagementSpaceView, scheduleID string) (Schedule, bool) {
+	for _, calendar := range space.Schedules {
+		if calendar.ID == scheduleID {
+			return calendar, true
+		}
+	}
+	return Schedule{}, false
 }
 
 func (api *handler) getScheduleWeek(response http.ResponseWriter, space ManagementSpaceView, scheduleID, weekStart string) {

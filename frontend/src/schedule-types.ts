@@ -38,7 +38,8 @@ export interface WeekParticipation {
 
 export interface DateException {
   date: string;
-  state: "vacation" | "absence" | "medical_leave";
+  state: "undefined" | "day_off" | "work_period" | "vacation" | "absence" | "medical_leave";
+  workPeriod?: WorkPeriod;
 }
 
 export interface Schedule {
@@ -54,6 +55,9 @@ export interface ScheduleDay {
   weekday: number;
   state: "outside_participation" | "undefined" | "day_off" | "work_period" | "vacation" | "absence" | "medical_leave";
   workPeriod?: WorkPeriod;
+  patternState?: PatternDay["state"];
+  patternWorkPeriod?: WorkPeriod;
+  hasException: boolean;
 }
 
 export interface PersonWeek {
@@ -62,8 +66,19 @@ export interface PersonWeek {
   days: ScheduleDay[];
 }
 
+export interface ScheduleEditRequest {
+  revision: string;
+  weekStart: string;
+  mode: "once" | "recurring";
+  dates?: DateException[];
+  removeDates?: string[];
+  weekdays?: PatternDay[];
+  removeFutureExceptions?: boolean;
+}
+
 export interface ScheduleWeek {
   scheduleId: string;
+  revision: string;
   weekStart: string;
   weekEnd: string;
   timeZone: string;

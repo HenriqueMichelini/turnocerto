@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/HenriqueMichelini/turnocerto/backend/internal/schedule"
 )
@@ -16,12 +18,161 @@ type schedulingManagementSpaceStore struct {
 func newSchedulingManagementSpaceStore() *schedulingManagementSpaceStore {
 	store := &schedulingManagementSpaceStore{managementSpaceStore: &managementSpaceStore{}}
 	space := schedule.ManagementSpace{ID: "11111111-1111-4111-8111-111111111111", Name: "Clínica Aurora"}
-	calendar := schedule.Schedule{ID: "22222222-2222-4222-8222-222222222222", Name: "Equipe da manhã", TimeZone: "America/Sao_Paulo", ManagementSpace: space}
+	calendar := schedule.Schedule{ID: "22222222-2222-4222-8222-222222222222", Name: "Equipe da manhã", TimeZone: "America/Sao_Paulo", Revision: "schedule-revision-1", ManagementSpace: space}
 	store.spaces = map[string]schedule.ManagementSpaceView{
 		space.ID: {ManagementSpace: space, Schedules: []schedule.Schedule{calendar}, People: []schedule.Person{}},
 	}
 	store.tokenHashes = map[string]string{space.ID: hashManagementToken(previewToken)}
 	return store
+}
+
+func TestManagementScheduleEditsRequireManagementCredential(t *testing.T) {
+	store := newSchedulingManagementSpaceStore()
+	handler := schedule.NewHTTPHandlerWithManagement(&memoryScheduleStore{}, store, "preview", previewOrigin, "", schedule.ManagementSecurity{})
+	response := managementRequest(handler, http.MethodPost,
+		"/api/management-spaces/11111111-1111-4111-8111-111111111111/schedules/22222222-2222-4222-8222-222222222222/participations/33333333-3333-4333-8333-333333333333/edits",
+		"", `{"revision":"version-1"}`)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("schedule edit without a management credential status = %d, want %d; body=%s", response.Code, http.StatusUnauthorized, response.Body)
+	}
+}
+
+func TestPointEditChangesOnlySelectedDatesAndRejectsASecondEditorWithStaleRevision(t *testing.T) {
+	store := newSchedulingManagementSpaceStore()
+	handler := schedule.NewHTTPHandlerWithManagement(&memoryScheduleStore{}, store, "preview", previewOrigin, "", schedule.ManagementSecurity{})
+	spaceID := "11111111-1111-4111-8111-111111111111"
+	scheduleID := "22222222-2222-4222-8222-222222222222"
+	personResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/people", previewToken, `{"name":"Ana"}`)
+	var personResult struct {
+		Person schedule.Person `json:"person"`
+	}
+	if err := json.Unmarshal(personResponse.Body.Bytes(), &personResult); err != nil {
+		t.Fatal(err)
+	}
+	days := make([]schedule.PatternDay, 7)
+	for index := range days {
+		days[index] = schedule.PatternDay{Weekday: index + 1, State: schedule.DayStateUndefined}
+	}
+	participationBody, err := json.Marshal(struct {
+		PersonID  string                 `json:"personId"`
+		StartDate string                 `json:"startDate"`
+		Pattern   schedule.WeeklyPattern `json:"pattern"`
+	}{personResult.Person.ID, "2026-09-07", schedule.WeeklyPattern{EffectiveFrom: "2026-09-07", Weekdays: days}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	participationResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"/participations", previewToken, string(participationBody))
+	if participationResponse.Code != http.StatusCreated {
+		t.Fatalf("create participation status = %d, want %d; body=%s", participationResponse.Code, http.StatusCreated, participationResponse.Body)
+	}
+	var participationResult struct {
+		Participation schedule.WeekParticipation `json:"participation"`
+	}
+	if err := json.Unmarshal(participationResponse.Body.Bytes(), &participationResult); err != nil {
+		t.Fatal(err)
+	}
+	var openedRevision struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(participationResponse.Body.Bytes(), &openedRevision); err != nil {
+		t.Fatal(err)
+	}
+	if openedRevision.Revision == "" {
+		t.Fatal("creating a participation did not return the schedule revision")
+	}
+	path := "/api/management-spaces/" + spaceID + "/schedules/" + scheduleID + "/participations/" + participationResult.Participation.ID + "/edits"
+	secondPersonResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/people", previewToken, `{"name":"Bruna"}`)
+	var secondPersonResult struct {
+		Person schedule.Person `json:"person"`
+	}
+	if err := json.Unmarshal(secondPersonResponse.Body.Bytes(), &secondPersonResult); err != nil {
+		t.Fatal(err)
+	}
+	secondParticipationBody, err := json.Marshal(struct {
+		PersonID  string                 `json:"personId"`
+		StartDate string                 `json:"startDate"`
+		Pattern   schedule.WeeklyPattern `json:"pattern"`
+	}{secondPersonResult.Person.ID, "2026-09-07", schedule.WeeklyPattern{EffectiveFrom: "2026-09-07", Weekdays: days}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondParticipationResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"/participations", previewToken, string(secondParticipationBody))
+	if secondParticipationResponse.Code != http.StatusCreated {
+		t.Fatalf("create second participation status = %d, want %d; body=%s", secondParticipationResponse.Code, http.StatusCreated, secondParticipationResponse.Body)
+	}
+	var secondParticipationResult struct {
+		Participation schedule.WeekParticipation `json:"participation"`
+	}
+	if err := json.Unmarshal(secondParticipationResponse.Body.Bytes(), &secondParticipationResult); err != nil {
+		t.Fatal(err)
+	}
+	secondPath := "/api/management-spaces/" + spaceID + "/schedules/" + scheduleID + "/participations/" + secondParticipationResult.Participation.ID + "/edits"
+	latestWeekResponse := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"?weekStart=2026-09-07", previewToken, "")
+	var latestWeekResult struct {
+		Week schedule.ScheduleWeek `json:"week"`
+	}
+	if err := json.Unmarshal(latestWeekResponse.Body.Bytes(), &latestWeekResult); err != nil {
+		t.Fatal(err)
+	}
+	openedRevision.Revision = latestWeekResult.Week.Revision
+	firstEdit := schedule.ScheduleEdit{
+		Revision:  openedRevision.Revision,
+		WeekStart: "2026-09-07",
+		Mode:      schedule.ScheduleEditOnce,
+		Dates: []schedule.DateException{{
+			Date:       "2026-09-08",
+			State:      schedule.DayStateWorkPeriod,
+			WorkPeriod: &schedule.WorkPeriod{StartTime: "09:00", EndTime: "17:00"},
+		}},
+	}
+	body, err := json.Marshal(firstEdit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSave := managementRequest(handler, http.MethodPost, path, previewToken, string(body))
+	if firstSave.Code != http.StatusOK {
+		t.Fatalf("point edit status = %d, want %d; body=%s", firstSave.Code, http.StatusOK, firstSave.Body)
+	}
+	secondEdit := firstEdit
+	secondEdit.Dates = []schedule.DateException{{Date: "2026-09-09", State: schedule.DayStateDayOff}}
+	body, err = json.Marshal(secondEdit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSave := managementRequest(handler, http.MethodPost, secondPath, previewToken, string(body))
+	if secondSave.Code != http.StatusConflict || !strings.Contains(secondSave.Body.String(), "stale_schedule_edit") {
+		t.Fatalf("second save with the opened revision = %d %s, want a stale-save conflict", secondSave.Code, secondSave.Body)
+	}
+
+	weekResponse := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"?weekStart=2026-09-07", previewToken, "")
+	var weekResult struct {
+		Week schedule.ScheduleWeek `json:"week"`
+	}
+	if err := json.Unmarshal(weekResponse.Body.Bytes(), &weekResult); err != nil {
+		t.Fatal(err)
+	}
+	if got := weekResult.Week.People[0].Days[1].State; got != schedule.DayStateWorkPeriod {
+		t.Fatalf("Tuesday after the accepted edit = %q, want work_period", got)
+	}
+	if got := weekResult.Week.People[0].Days[2].State; got != schedule.DayStateUndefined {
+		t.Fatalf("Wednesday after the stale edit = %q, want unchanged undefined", got)
+	}
+	spaceResponse := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+spaceID, previewToken, "")
+	var spaceResult schedule.ManagementSpaceView
+	if err := json.Unmarshal(spaceResponse.Body.Bytes(), &spaceResult); err != nil {
+		t.Fatal(err)
+	}
+	participation := spaceResult.Schedules[0].Participations[0]
+	versions := participation.PatternVersions
+	if len(versions) != 1 || versions[0].Weekdays[1].State != schedule.DayStateUndefined {
+		t.Fatalf("point edit changed the Weekly Pattern: %#v", versions)
+	}
+	if len(participation.DateExceptions) != 1 || participation.DateExceptions[0].Date != "2026-09-08" || participation.DateExceptions[0].State != schedule.DayStateWorkPeriod {
+		t.Fatalf("point edit exceptions after the stale attempt = %#v, want only the accepted Tuesday change", participation.DateExceptions)
+	}
+	if len(spaceResult.Schedules[0].Participations[1].DateExceptions) != 0 {
+		t.Fatalf("stale save for second person partially applied: %#v", spaceResult.Schedules[0].Participations[1].DateExceptions)
+	}
 }
 
 func (store *schedulingManagementSpaceStore) GetManagementSpace(_ context.Context, spaceID, tokenHash string) (schedule.ManagementSpaceView, error) {
@@ -68,7 +219,7 @@ func (store *schedulingManagementSpaceStore) UpdateScheduleTimeZone(_ context.Co
 	return schedule.Schedule{}, schedule.ErrNotFound
 }
 
-func (store *schedulingManagementSpaceStore) CreateParticipation(_ context.Context, spaceID, scheduleID, tokenHash string, participation schedule.WeekParticipation) error {
+func (store *schedulingManagementSpaceStore) CreateParticipation(_ context.Context, spaceID, scheduleID, tokenHash string, participation schedule.WeekParticipation, expectedRevision, nextRevision string) error {
 	view, exists := store.spaces[spaceID]
 	if !exists || store.tokenHashes[spaceID] != tokenHash {
 		return schedule.ErrUnauthorized
@@ -78,6 +229,10 @@ func (store *schedulingManagementSpaceStore) CreateParticipation(_ context.Conte
 			participation.Person = person
 			for index, calendar := range view.Schedules {
 				if calendar.ID == scheduleID {
+					if calendar.Revision != expectedRevision {
+						return schedule.ErrStaleScheduleEdit
+					}
+					calendar.Revision = nextRevision
 					calendar.Participations = append(calendar.Participations, participation)
 					view.Schedules[index] = calendar
 					store.spaces[spaceID] = view
@@ -145,6 +300,123 @@ func (store *schedulingManagementSpaceStore) CreateDateException(_ context.Conte
 	return schedule.ErrNotFound
 }
 
+func (store *schedulingManagementSpaceStore) SaveScheduleEdit(_ context.Context, spaceID, scheduleID, participationID, tokenHash string, edit schedule.ScheduleEdit, nextRevision string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	view, exists := store.spaces[spaceID]
+	if !exists || store.tokenHashes[spaceID] != tokenHash {
+		return schedule.ErrUnauthorized
+	}
+	for scheduleIndex, calendar := range view.Schedules {
+		if calendar.ID != scheduleID {
+			continue
+		}
+		if calendar.Revision != edit.Revision {
+			return schedule.ErrStaleScheduleEdit
+		}
+		for participationIndex, participation := range calendar.Participations {
+			if participation.ID != participationID {
+				continue
+			}
+			switch edit.Mode {
+			case schedule.ScheduleEditOnce:
+				for _, exception := range edit.Dates {
+					exists := false
+					for index := range participation.DateExceptions {
+						if participation.DateExceptions[index].Date == exception.Date {
+							participation.DateExceptions[index] = exception
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						participation.DateExceptions = append(participation.DateExceptions, exception)
+					}
+				}
+				if len(edit.RemoveDates) != 0 {
+					remove := make(map[string]bool, len(edit.RemoveDates))
+					for _, date := range edit.RemoveDates {
+						remove[date] = true
+					}
+					remaining := participation.DateExceptions[:0]
+					for _, exception := range participation.DateExceptions {
+						if !remove[exception.Date] {
+							remaining = append(remaining, exception)
+						}
+					}
+					participation.DateExceptions = remaining
+				}
+			case schedule.ScheduleEditRecurring:
+				var base *schedule.WeeklyPattern
+				for index := range participation.PatternVersions {
+					version := &participation.PatternVersions[index]
+					if version.EffectiveFrom <= edit.WeekStart && (base == nil || version.EffectiveFrom > base.EffectiveFrom) {
+						base = version
+					}
+				}
+				if base == nil {
+					return schedule.ErrInvalidScheduleWeek
+				}
+				pattern := *base
+				pattern.ID = edit.PatternID
+				pattern.EffectiveFrom = edit.WeekStart
+				pattern.Weekdays = append([]schedule.PatternDay(nil), base.Weekdays...)
+				for _, update := range edit.Weekdays {
+					found := false
+					for index := range pattern.Weekdays {
+						if pattern.Weekdays[index].Weekday == update.Weekday {
+							pattern.Weekdays[index] = update
+							found = true
+							break
+						}
+					}
+					if !found {
+						pattern.Weekdays = append(pattern.Weekdays, update)
+					}
+				}
+				replaced := false
+				for index := range participation.PatternVersions {
+					if participation.PatternVersions[index].EffectiveFrom == edit.WeekStart {
+						participation.PatternVersions[index] = pattern
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					participation.PatternVersions = append(participation.PatternVersions, pattern)
+				}
+				if edit.RemoveFutureExceptions {
+					cutoff, err := schedule.FutureExceptionStartDate(calendar, edit.WeekStart, time.Now())
+					if err != nil {
+						return err
+					}
+					weekdays := make(map[int]bool, len(edit.Weekdays))
+					for _, day := range edit.Weekdays {
+						weekdays[day.Weekday] = true
+					}
+					remaining := participation.DateExceptions[:0]
+					for _, exception := range participation.DateExceptions {
+						parsed, _ := time.Parse("2006-01-02", exception.Date)
+						weekday := (int(parsed.Weekday())+6)%7 + 1
+						if exception.Date >= cutoff && weekdays[weekday] {
+							continue
+						}
+						remaining = append(remaining, exception)
+					}
+					participation.DateExceptions = remaining
+				}
+			}
+			calendar.Participations[participationIndex] = participation
+			calendar.Revision = nextRevision
+			view.Schedules[scheduleIndex] = calendar
+			store.spaces[spaceID] = view
+			return nil
+		}
+		return schedule.ErrNotFound
+	}
+	return schedule.ErrNotFound
+}
+
 func TestManagementEditorCanCreateAndUpdateDateSpecificSpecialState(t *testing.T) {
 	store := newSchedulingManagementSpaceStore()
 	handler := schedule.NewHTTPHandlerWithManagement(&memoryScheduleStore{}, store, "preview", previewOrigin, "", schedule.ManagementSecurity{})
@@ -161,22 +433,71 @@ func TestManagementEditorCanCreateAndUpdateDateSpecificSpecialState(t *testing.T
 	participationResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"/participations", previewToken, participationBody)
 	var participationResult struct {
 		Participation schedule.WeekParticipation `json:"participation"`
+		Revision      string                     `json:"revision"`
 	}
 	if err := json.Unmarshal(participationResponse.Body.Bytes(), &participationResult); err != nil {
 		t.Fatal(err)
 	}
-	path := "/api/management-spaces/" + spaceID + "/schedules/" + scheduleID + "/participations/" + participationResult.Participation.ID + "/exceptions"
-	outsideParticipation := managementRequest(handler, http.MethodPost, path, previewToken, `{"date":"2026-09-14","state":"vacation"}`)
+	if participationResult.Revision == "" {
+		t.Fatal("create participation response omitted schedule revision")
+	}
+	path := "/api/management-spaces/" + spaceID + "/schedules/" + scheduleID + "/participations/" + participationResult.Participation.ID + "/edits"
+	invalidEdit, err := json.Marshal(schedule.ScheduleEdit{
+		Revision:  participationResult.Revision,
+		WeekStart: "2026-09-14",
+		Mode:      schedule.ScheduleEditOnce,
+		Dates:     []schedule.DateException{{Date: "2026-09-14", State: schedule.DayStateVacation}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideParticipation := managementRequest(handler, http.MethodPost, path, previewToken, string(invalidEdit))
 	if outsideParticipation.Code != http.StatusBadRequest {
 		t.Fatalf("out-of-range date exception status = %d, want %d", outsideParticipation.Code, http.StatusBadRequest)
 	}
-	exceptionResponse := managementRequest(handler, http.MethodPost, path, previewToken, `{"date":"2026-09-11","state":"vacation"}`)
-	if exceptionResponse.Code != http.StatusCreated {
-		t.Fatalf("create date exception status = %d, want %d; body=%s", exceptionResponse.Code, http.StatusCreated, exceptionResponse.Body)
+	edit := schedule.ScheduleEdit{
+		Revision:  participationResult.Revision,
+		WeekStart: "2026-09-07",
+		Mode:      schedule.ScheduleEditOnce,
+		Dates:     []schedule.DateException{{Date: "2026-09-11", State: schedule.DayStateVacation}},
 	}
-	updateResponse := managementRequest(handler, http.MethodPost, path, previewToken, `{"date":"2026-09-11","state":"absence"}`)
-	if updateResponse.Code != http.StatusCreated {
-		t.Fatalf("update date exception status = %d, want %d; body=%s", updateResponse.Code, http.StatusCreated, updateResponse.Body)
+	editBody, err := json.Marshal(edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exceptionResponse := managementRequest(handler, http.MethodPost, path, previewToken, string(editBody))
+	if exceptionResponse.Code != http.StatusOK {
+		t.Fatalf("create date exception status = %d, want %d; body=%s", exceptionResponse.Code, http.StatusOK, exceptionResponse.Body)
+	}
+	var updatedRevision struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(exceptionResponse.Body.Bytes(), &updatedRevision); err != nil {
+		t.Fatal(err)
+	}
+	edit.Revision = updatedRevision.Revision
+	edit.Dates = []schedule.DateException{{Date: "2026-09-11", State: schedule.DayStateAbsence}}
+	editBody, err = json.Marshal(edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateResponse := managementRequest(handler, http.MethodPost, path, previewToken, string(editBody))
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update date exception status = %d, want %d; body=%s", updateResponse.Code, http.StatusOK, updateResponse.Body)
+	}
+	if err := json.Unmarshal(updateResponse.Body.Bytes(), &updatedRevision); err != nil {
+		t.Fatal(err)
+	}
+	edit.Revision = updatedRevision.Revision
+	edit.Dates = nil
+	edit.RemoveDates = []string{"2026-09-11"}
+	removeBody, err := json.Marshal(edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeResponse := managementRequest(handler, http.MethodPost, path, previewToken, string(removeBody))
+	if removeResponse.Code != http.StatusOK {
+		t.Fatalf("remove date exception status = %d, want %d; body=%s", removeResponse.Code, http.StatusOK, removeResponse.Body)
 	}
 	weekResponse := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+spaceID+"/schedules/"+scheduleID+"?weekStart=2026-09-07", previewToken, "")
 	if weekResponse.Code != http.StatusOK {
@@ -188,8 +509,11 @@ func TestManagementEditorCanCreateAndUpdateDateSpecificSpecialState(t *testing.T
 	if err := json.Unmarshal(weekResponse.Body.Bytes(), &weekResult); err != nil {
 		t.Fatal(err)
 	}
-	if got := weekResult.Week.People[0].Days[4].State; got != schedule.DayStateAbsence {
-		t.Fatalf("Friday derived state after updating exception = %q, want absence", got)
+	if got := weekResult.Week.People[0].Days[4].State; got != schedule.DayStateDayOff {
+		t.Fatalf("Friday derived state after removing exception = %q, want underlying day_off pattern", got)
+	}
+	if weekResult.Week.People[0].Days[4].HasException {
+		t.Fatal("removed Friday exception still appears in the derived week")
 	}
 }
 
@@ -304,9 +628,23 @@ func TestManagementEditorCanShareOnePersonAcrossOverlappingSchedules(t *testing.
 	}
 
 	futurePattern := pattern("2026-10-05", schedule.DayStateWorkPeriod, schedule.DayStateDayOff)
-	patternResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/schedules/"+initialScheduleID+"/participations/"+firstParticipation.ID+"/patterns", previewToken, futurePattern)
-	if patternResponse.Code != http.StatusCreated {
-		t.Fatalf("add dated pattern version status = %d, want %d; body=%s", patternResponse.Code, http.StatusCreated, patternResponse.Body)
+	var futurePatternVersion schedule.WeeklyPattern
+	if err := json.Unmarshal([]byte(futurePattern), &futurePatternVersion); err != nil {
+		t.Fatal(err)
+	}
+	patternEdit := schedule.ScheduleEdit{
+		Revision:  weekResult.Week.Revision,
+		WeekStart: futurePatternVersion.EffectiveFrom,
+		Mode:      schedule.ScheduleEditRecurring,
+		Weekdays:  []schedule.PatternDay{futurePatternVersion.Weekdays[0], futurePatternVersion.Weekdays[3]},
+	}
+	patternEditBody, err := json.Marshal(patternEdit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patternResponse := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+spaceID+"/schedules/"+initialScheduleID+"/participations/"+firstParticipation.ID+"/edits", previewToken, string(patternEditBody))
+	if patternResponse.Code != http.StatusOK {
+		t.Fatalf("add dated pattern version status = %d, want %d; body=%s", patternResponse.Code, http.StatusOK, patternResponse.Body)
 	}
 	futureWeekResponse := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+spaceID+"/schedules/"+initialScheduleID+"?weekStart=2026-10-05", previewToken, "")
 	if futureWeekResponse.Code != http.StatusOK {

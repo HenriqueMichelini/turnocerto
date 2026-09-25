@@ -140,7 +140,7 @@ test("the browser assigns one shared Person to overlapping Schedules and opens d
     const start = new Date(date);
     start.setUTCDate(start.getUTCDate() + 2);
     const end = new Date(date);
-    end.setUTCDate(end.getUTCDate() + 4);
+    end.setUTCDate(end.getUTCDate() + 13);
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
   });
 
@@ -170,15 +170,22 @@ test("the browser assigns one shared Person to overlapping Schedules and opens d
   await expect(firstScheduleWeek.locator(".week-day-outside_participation").last()).toContainText("Fora da participação");
   await expect(firstScheduleWeek.locator(".week-day-work_period")).toContainText("22:00–06:00");
   await expect(firstScheduleWeek.locator(".week-day-day_off")).toContainText("Folga");
-  await expect(firstScheduleWeek.locator(".week-day-undefined")).toContainText("Não definido");
+  await expect(firstScheduleWeek.locator(".week-day-undefined").first()).toContainText("Não definido");
 
-  await page.getByLabel("Data", { exact: true }).fill(dates.start);
-  await page.getByLabel("Estado especial", { exact: true }).selectOption("medical_leave");
-  await page.getByRole("button", { name: "Salvar estado especial" }).click();
-  await expect(page.locator(".schedule-editor .notice.success")).toContainText("Estado especial salvo");
+  await firstScheduleWeek.getByRole("checkbox").nth(2).check();
+  await firstScheduleWeek.getByLabel("Programação").selectOption("medical_leave");
+  await firstScheduleWeek.getByRole("button", { name: "Salvar alteração pontual" }).click();
+  await expect(page.locator(".schedule-editor .notice.success")).toContainText("Alteração salva somente para as datas selecionadas");
   await expect(firstScheduleWeek.locator(".week-day-medical_leave")).toContainText("Atestado");
-  await page.getByLabel("Estado especial", { exact: true }).selectOption("absence");
-  await page.getByRole("button", { name: "Salvar estado especial" }).click();
+  await firstScheduleWeek.getByRole("checkbox").nth(2).check();
+  await firstScheduleWeek.getByLabel("Remover a exceção e usar o padrão semanal").check();
+  await firstScheduleWeek.getByRole("button", { name: "Salvar alteração pontual" }).click();
+  await expect(page.locator(".schedule-editor .notice.success")).toContainText("Exceção removida; o padrão recorrente voltou a valer nesta data.");
+  await expect(firstScheduleWeek.locator(".week-day-work_period")).toContainText("22:00–06:00");
+  await firstScheduleWeek.getByRole("checkbox").nth(2).check();
+  await firstScheduleWeek.getByLabel("Programação").selectOption("absence");
+  await firstScheduleWeek.getByRole("button", { name: "Salvar alteração pontual" }).click();
+  await expect(page.locator(".schedule-editor .notice.success")).toContainText("Alteração salva somente para as datas selecionadas");
   await expect(firstScheduleWeek.locator(".week-day-absence")).toContainText("Ausência");
 
   await page.getByText("Criar outra escala", { exact: true }).click();
@@ -205,7 +212,7 @@ test("the browser assigns one shared Person to overlapping Schedules and opens d
   expect(viewResponse.status()).toBe(200);
   const view = await viewResponse.json() as {
     people: Array<{ id: string; name: string }>;
-    schedules: Array<{ id: string; timeZone: string; participations: Array<{ id: string; person: { id: string }; startDate: string; endDate?: string; patternVersions: Array<{ effectiveFrom: string }>; dateExceptions?: Array<{ date: string; state: string }> }> }>;
+    schedules: Array<{ id: string; timeZone: string; participations: Array<{ id: string; person: { id: string }; startDate: string; endDate?: string; patternVersions: Array<{ effectiveFrom: string; weekdays: Array<{ weekday: number; state: string }> }>; dateExceptions?: Array<{ date: string; state: string }> }> }>;
   };
   expect(view.people).toHaveLength(1);
   expect(view.people[0].name).toBe("Ana Ribeiro");
@@ -222,26 +229,161 @@ test("the browser assigns one shared Person to overlapping Schedules and opens d
   }
   expect(firstSchedule.participations[0].endDate).toBe(dates.end);
   expect(secondSchedule.participations[0].endDate).toBeUndefined();
-  expect(firstSchedule.participations[0].dateExceptions).toEqual([{ date: dates.start, state: "absence" }]);
+  const openedWeekStart = weekStart.toISOString().slice(0, 10);
+  const currentWednesday = new Date(`${openedWeekStart}T00:00:00Z`);
+  currentWednesday.setUTCDate(currentWednesday.getUTCDate() + 2);
+  const wednesdayDate = currentWednesday.toISOString().slice(0, 10);
+  expect(firstSchedule.participations[0].dateExceptions).toEqual([{ date: wednesdayDate, state: "absence" }]);
+  const patternBeforePointEdit = firstSchedule.participations[0].patternVersions;
+
+  const thursday = new Date(`${openedWeekStart}T00:00:00Z`);
+  thursday.setUTCDate(thursday.getUTCDate() + 3);
+  const thursdayDate = thursday.toISOString().slice(0, 10);
+  const editHeaders = { Origin: webOrigin, Authorization: `Bearer ${initial.managementToken}`, "Content-Type": "application/json" };
+  const secondPersonResponse = await request.post(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/people`, {
+    headers: editHeaders,
+    data: { name: "Bruna Ribeiro" },
+  });
+  expect(secondPersonResponse.status()).toBe(201);
+  const secondPerson = await secondPersonResponse.json() as { person: { id: string } };
+  const secondParticipationResponse = await request.post(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}/participations`, {
+    headers: editHeaders,
+    data: {
+      personId: secondPerson.person.id,
+      startDate: dates.start,
+      endDate: dates.end,
+      pattern: {
+        effectiveFrom: openedWeekStart,
+        weekdays: Array.from({ length: 7 }, (_, index) => ({ weekday: index + 1, state: "undefined" })),
+      },
+    },
+  });
+  expect(secondParticipationResponse.status()).toBe(201);
+  const secondParticipation = await secondParticipationResponse.json() as { participation: { id: string } };
+  const openedWeekResponse = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}?weekStart=${openedWeekStart}`, { headers: editHeaders });
+  const openedWeek = (await openedWeekResponse.json() as { week: { revision: string } }).week;
+  const firstEditURL = `${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}/participations/${firstSchedule.participations[0].id}/edits`;
+  const pointEdit = await request.post(firstEditURL, {
+    headers: editHeaders,
+    data: {
+      revision: openedWeek.revision,
+      weekStart: openedWeekStart,
+      mode: "once",
+      dates: [{ date: thursdayDate, state: "vacation" }],
+    },
+  });
+  expect(pointEdit.status()).toBe(200);
+  const pointRevision = (await pointEdit.json() as { revision: string }).revision;
+  const staleSecondPersonEdit = await request.post(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}/participations/${secondParticipation.participation.id}/edits`, {
+    headers: editHeaders,
+    data: {
+      revision: openedWeek.revision,
+      weekStart: openedWeekStart,
+      mode: "once",
+      dates: [{ date: wednesdayDate, state: "absence" }],
+    },
+  });
+  expect(staleSecondPersonEdit.status()).toBe(409);
+  const afterStaleSecondPerson = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}?weekStart=${openedWeekStart}`, { headers: editHeaders });
+  const afterStalePeople = (await afterStaleSecondPerson.json() as { week: { people: Array<{ person: { name: string }; days: Array<{ state: string; hasException: boolean }> }> } }).week.people;
+  const brunaWeek = afterStalePeople.find((person) => person.person.name === "Bruna Ribeiro")!;
+  expect(brunaWeek.days[2]).toEqual(expect.objectContaining({ state: "undefined", hasException: false }));
+  const afterPointEdit = await request.get(spaceURL, { headers: editHeaders });
+  const firstScheduleAfterPointEdit = (await afterPointEdit.json() as typeof view).schedules.find((calendar) => calendar.id === firstSchedule.id)!;
+  expect(firstScheduleAfterPointEdit.participations[0].patternVersions).toEqual(patternBeforePointEdit);
+  expect(firstScheduleAfterPointEdit.participations[0].dateExceptions?.find((exception) => exception.date === thursdayDate)).toEqual({ date: thursdayDate, state: "vacation" });
+  const nextWeekWednesday = new Date(`${openedWeekStart}T00:00:00Z`);
+  nextWeekWednesday.setUTCDate(nextWeekWednesday.getUTCDate() + 9);
+  const nextWeekStartDate = new Date(`${openedWeekStart}T00:00:00Z`);
+  nextWeekStartDate.setUTCDate(nextWeekStartDate.getUTCDate() + 7);
+  const nextWeekStart = nextWeekStartDate.toISOString().slice(0, 10);
+  const nextWeekWednesdayDate = nextWeekWednesday.toISOString().slice(0, 10);
+  const futureException = await request.post(firstEditURL, {
+    headers: editHeaders,
+    data: {
+      revision: pointRevision,
+      weekStart: nextWeekStart,
+      mode: "once",
+      dates: [{ date: nextWeekWednesdayDate, state: "absence" }],
+    },
+  });
+  expect(futureException.status()).toBe(200);
+  const futureExceptionRevision = (await futureException.json() as { revision: string }).revision;
+  const preservedPattern = await request.post(firstEditURL, {
+    headers: editHeaders,
+    data: {
+      revision: futureExceptionRevision,
+      weekStart: openedWeekStart,
+      mode: "recurring",
+      weekdays: [{ weekday: 3, state: "day_off" }],
+    },
+  });
+  expect(preservedPattern.status()).toBe(200);
+  const currentRevision = (await preservedPattern.json() as { revision: string }).revision;
+
+  // A second editor with the same opened revision cannot change the pattern or remove exceptions.
+  const stalePattern = await request.post(firstEditURL, {
+    headers: editHeaders,
+    data: {
+      revision: pointRevision,
+      weekStart: openedWeekStart,
+      mode: "recurring",
+      weekdays: [{ weekday: 4, state: "day_off" }],
+      removeFutureExceptions: true,
+    },
+  });
+  expect(stalePattern.status()).toBe(409);
+  expect(await stalePattern.json()).toEqual({ error: "stale_schedule_edit" });
+  const preservedWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}?weekStart=${openedWeekStart}`, { headers: editHeaders });
+  const preservedDays = (await preservedWeek.json() as { week: { people: Array<{ days: Array<{ state: string }> }> } }).week.people[0].days;
+  expect(preservedDays[2].state).toBe("absence");
+  expect(preservedDays[3].state).toBe("vacation");
+
+  const removeAffected = await request.post(firstEditURL, {
+    headers: editHeaders,
+    data: {
+      revision: currentRevision,
+      weekStart: openedWeekStart,
+      mode: "recurring",
+      weekdays: [{ weekday: 3, state: "day_off" }],
+      removeFutureExceptions: true,
+    },
+  });
+  expect(removeAffected.status()).toBe(200);
+  const updatedWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}?weekStart=${openedWeekStart}`, { headers: editHeaders });
+  const updatedDays = (await updatedWeek.json() as { week: { people: Array<{ days: Array<{ state: string }> }> } }).week.people[0].days;
+  expect(updatedDays[2].state).toBe("absence");
+  expect(updatedDays[3].state).toBe("vacation");
+  const removedFutureWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${firstSchedule.id}?weekStart=${nextWeekStart}`, { headers: editHeaders });
+  const removedFutureWednesday = (await removedFutureWeek.json() as { week: { people: Array<{ days: Array<{ state: string; hasException: boolean }> }> } }).week.people[0].days[2];
+  expect(removedFutureWednesday).toEqual(expect.objectContaining({ state: "day_off", hasException: false }));
 
   const futurePatternMonday = new Date(`${dates.start}T00:00:00Z`);
   futurePatternMonday.setUTCDate(futurePatternMonday.getUTCDate() + 21);
   futurePatternMonday.setUTCDate(futurePatternMonday.getUTCDate() - ((futurePatternMonday.getUTCDay() + 6) % 7));
   const effectiveFrom = futurePatternMonday.toISOString().slice(0, 10);
-  const futurePatternDays = Array.from({ length: 7 }, (_, index) => ({
-    weekday: index + 1,
-    state: index === 0 ? "day_off" : "undefined",
-  }));
-  const addedPattern = await request.post(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${secondSchedule.id}/participations/${secondSchedule.participations[0].id}/patterns`, {
-    headers: { Origin: webOrigin, Authorization: `Bearer ${initial.managementToken}`, "Content-Type": "application/json" },
-    data: { effectiveFrom, weekdays: futurePatternDays },
+  const secondScheduleWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${secondSchedule.id}?weekStart=${openedWeekStart}`, { headers: editHeaders });
+  const secondScheduleRevision = (await secondScheduleWeek.json() as { week: { revision: string } }).week.revision;
+  const addedPattern = await request.post(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${secondSchedule.id}/participations/${secondSchedule.participations[0].id}/edits`, {
+    headers: editHeaders,
+    data: {
+      revision: secondScheduleRevision,
+      weekStart: effectiveFrom,
+      mode: "recurring",
+      weekdays: [{ weekday: 1, state: "day_off" }],
+    },
   });
-  expect(addedPattern.status()).toBe(201);
+  expect(addedPattern.status()).toBe(200);
   const futureWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${secondSchedule.id}?weekStart=${effectiveFrom}`, {
     headers: { Origin: webOrigin, Authorization: `Bearer ${initial.managementToken}` },
   });
   expect(futureWeek.status()).toBe(200);
   expect((await futureWeek.json() as { week: { people: Array<{ days: Array<{ state: string }> }> } }).week.people[0].days[0].state).toBe("day_off");
+  const earlierWeek = await request.get(`${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}/schedules/${secondSchedule.id}?weekStart=${openedWeekStart}`, {
+    headers: { Origin: webOrigin, Authorization: `Bearer ${initial.managementToken}` },
+  });
+  expect(earlierWeek.status()).toBe(200);
+  expect((await earlierWeek.json() as { week: { people: Array<{ days: Array<{ state: string }> }> } }).week.people[0].days[2].state).toBe("undefined");
 });
 
 test("private Space requests reject missing, incorrect, and out-of-scope credentials", async ({ request }) => {

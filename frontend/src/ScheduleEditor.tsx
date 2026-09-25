@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import type { DateException, PatternDay, Person, Schedule, ScheduleWeek, WeekParticipation } from "./schedule-types";
+import type { DateException, PatternDay, Person, Schedule, ScheduleEditRequest, ScheduleDay, ScheduleWeek, WorkPeriod } from "./schedule-types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const weekdayNames = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
@@ -40,6 +40,17 @@ interface PatternDayState {
   endTime: string;
 }
 
+interface DayEditState {
+  state: DateException["state"];
+  startTime: string;
+  endTime: string;
+  breakStartTime: string;
+  breakEndTime: string;
+  removeException: boolean;
+}
+
+type EditMode = ScheduleEditRequest["mode"];
+
 const emptyPattern = (): PatternDayState[] => weekdayNames.map(() => ({
   state: "undefined",
   startTime: "09:00",
@@ -69,11 +80,12 @@ export function ScheduleEditor({
   const [personName, setPersonName] = useState("");
   const [isCreatingPerson, setIsCreatingPerson] = useState(false);
   const [selectedPersonID, setSelectedPersonID] = useState(people[0]?.id ?? "");
-  const [recentParticipation, setRecentParticipation] = useState<WeekParticipation | null>(null);
-  const [exceptionParticipationID, setExceptionParticipationID] = useState(selectedSchedule.participations?.[0]?.id ?? "");
-  const [exceptionDate, setExceptionDate] = useState("");
-  const [exceptionState, setExceptionState] = useState<DateException["state"]>("vacation");
-  const [isSavingException, setIsSavingException] = useState(false);
+  const [selectedDays, setSelectedDays] = useState<Record<string, string[]>>({});
+  const [editModes, setEditModes] = useState<Record<string, EditMode>>({});
+  const [dayDrafts, setDayDrafts] = useState<Record<string, Record<string, DayEditState>>>({});
+  const [removeFutureExceptions, setRemoveFutureExceptions] = useState<Record<string, boolean>>({});
+  const [isSavingEdit, setIsSavingEdit] = useState<string | null>(null);
+  const [conflictedParticipation, setConflictedParticipation] = useState<string | null>(null);
   const [startDate, setStartDate] = useState(() => dateInTimeZone(selectedSchedule.timeZone, new Date()));
   const [endDate, setEndDate] = useState("");
   const [pattern, setPattern] = useState<PatternDayState[]>(emptyPattern);
@@ -86,11 +98,13 @@ export function ScheduleEditor({
     setNewScheduleTimeZone(selectedSchedule.timeZone);
     setWeekStart(mondayInTimeZone(selectedSchedule.timeZone, new Date()));
     setStartDate(dateInTimeZone(selectedSchedule.timeZone, new Date()));
-    setRecentParticipation(null);
-    setExceptionParticipationID(selectedSchedule.participations?.[0]?.id ?? "");
-    setExceptionDate("");
+    setSelectedDays({});
+    setEditModes({});
+    setDayDrafts({});
+    setRemoveFutureExceptions({});
+    setConflictedParticipation(null);
     setWeek(null);
-  }, [selectedSchedule.id, selectedSchedule.timeZone, selectedSchedule.participations]);
+  }, [selectedSchedule.id, selectedSchedule.timeZone]);
 
   useEffect(() => {
     if (!people.some((person) => person.id === selectedPersonID)) {
@@ -110,7 +124,14 @@ export function ScheduleEditor({
         );
         if (!response.ok) throw new Error("week_load_failed");
         const result = await response.json() as { week: ScheduleWeek };
-        if (active) setWeek(result.week);
+        if (active) {
+          setWeek(result.week);
+          setSelectedDays({});
+          setEditModes({});
+          setDayDrafts({});
+          setRemoveFutureExceptions({});
+          setConflictedParticipation(null);
+        }
       } catch {
         if (active) setError("Não foi possível abrir esta semana. Tente novamente.");
       } finally {
@@ -218,10 +239,7 @@ export function ScheduleEditor({
         }),
       });
       if (!response.ok) throw new Error("participation_create_failed");
-      const result = await response.json() as { participation: WeekParticipation };
-      setRecentParticipation(result.participation);
-      setExceptionParticipationID(result.participation.id);
-      setExceptionDate(startDate);
+      await response.json() as { participation: unknown };
       setMessage("Pessoa incluída na escala e padrão recorrente salvo.");
       setPattern(emptyPattern());
       setEndDate("");
@@ -233,29 +251,115 @@ export function ScheduleEditor({
     }
   }
 
-  async function saveDateException(event: FormEvent<HTMLFormElement>) {
+  async function saveScheduleEdit(event: FormEvent<HTMLFormElement>, personWeek: ScheduleWeek["people"][number]) {
     event.preventDefault();
-    if (!exceptionParticipationID) {
-      setError("Inclua uma pessoa nesta escala antes de registrar um estado especial.");
+    const participationID = personWeek.participationId;
+    const mode = editModes[participationID] ?? "once";
+    const days = personWeek.days.filter((day) => (selectedDays[participationID] ?? []).includes(day.date));
+    if (days.length === 0) {
+      setError("Selecione ao menos uma data para editar.");
       return;
     }
-    setIsSavingException(true);
+    const drafts = dayDrafts[participationID] ?? {};
+    const updates = days.map((day) => ({ day, draft: drafts[day.date] ?? dayEditFromScheduleDay(day, mode) }));
+    if (updates.some(({ day, draft }) => !(mode === "once" && day.hasException && draft.removeException) && !validDayDraft(draft, mode))) {
+      setError(mode === "recurring"
+        ? "Confira as jornadas e escolha um dia recorrente. Férias, ausência e atestado só podem ser lançados em datas específicas."
+        : "Confira os horários das jornadas e dos intervalos antes de salvar.");
+      return;
+    }
+    const removeDates = mode === "once"
+      ? updates.filter(({ day, draft }) => day.hasException && draft.removeException).map(({ day }) => day.date)
+      : [];
+    const edit: ScheduleEditRequest = {
+      revision: week?.revision ?? "",
+      weekStart: week?.weekStart ?? weekStart,
+      mode,
+      ...(mode === "once"
+        ? {
+            dates: updates.filter(({ day, draft }) => !(day.hasException && draft.removeException)).map(({ day, draft }) => dateExceptionFromDraft(day.date, draft)),
+            ...(removeDates.length > 0 ? { removeDates } : {}),
+          }
+        : {
+            weekdays: updates.map(({ day, draft }) => patternDayFromDraft(day.weekday, draft)),
+            removeFutureExceptions: removeFutureExceptions[participationID] ?? false,
+          }),
+    };
+    setIsSavingEdit(participationID);
     setError("");
     setMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/api/management-spaces/${encodeURIComponent(spaceID)}/schedules/${encodeURIComponent(selectedSchedule.id)}/participations/${encodeURIComponent(exceptionParticipationID)}/exceptions`, {
+      const response = await fetch(`${apiBaseUrl}/api/management-spaces/${encodeURIComponent(spaceID)}/schedules/${encodeURIComponent(selectedSchedule.id)}/participations/${encodeURIComponent(participationID)}/edits`, {
         method: "POST",
         headers: managementHeaders(managementToken, { Accept: "application/json", "Content-Type": "application/json" }),
-        body: JSON.stringify({ date: exceptionDate, state: exceptionState }),
+        body: JSON.stringify(edit),
       });
-      if (!response.ok) throw new Error("date_exception_save_failed");
-      setMessage("Estado especial salvo para esta data.");
+      if (response.status === 409) {
+        setConflictedParticipation(participationID);
+        setError("Outra pessoa salvou uma alteração enquanto esta semana estava aberta. Reabra a semana para carregar a versão mais recente antes de tentar novamente.");
+        return;
+      }
+      if (!response.ok) {
+        setError("Não foi possível salvar a alteração. Confira as datas e os horários selecionados.");
+        return;
+      }
+      setMessage(mode === "once"
+        ? removeDates.length > 0 && updates.length === removeDates.length
+          ? "Exceção removida; o padrão recorrente voltou a valer nesta data."
+          : "Alteração salva somente para as datas selecionadas."
+        : `Padrão recorrente salvo a partir de ${formatDate(week?.weekStart ?? weekStart)}.`);
       setReloadVersion((version) => version + 1);
     } catch {
-      setError("Não foi possível salvar. Escolha uma data dentro da participação.");
+      setError("Não foi possível salvar agora. Confira sua conexão e tente novamente.");
     } finally {
-      setIsSavingException(false);
+      setIsSavingEdit(null);
     }
+  }
+
+  function toggleEditDay(participationID: string, day: ScheduleDay, checked: boolean) {
+    setSelectedDays((current) => {
+      const next = new Set(current[participationID] ?? []);
+      if (checked) next.add(day.date);
+      else next.delete(day.date);
+      return { ...current, [participationID]: [...next] };
+    });
+    if (checked) {
+      setDayDrafts((current) => {
+        if (current[participationID]?.[day.date]) return current;
+        return {
+          ...current,
+          [participationID]: {
+            ...current[participationID],
+            [day.date]: dayEditFromScheduleDay(day, editModes[participationID] ?? "once"),
+          },
+        };
+      });
+    }
+  }
+
+  function changeEditMode(personWeek: ScheduleWeek["people"][number], mode: EditMode) {
+    const participationID = personWeek.participationId;
+    setEditModes((current) => ({ ...current, [participationID]: mode }));
+    if (mode === "recurring") {
+      const selected = new Set(selectedDays[participationID] ?? []);
+      setDayDrafts((current) => ({
+        ...current,
+        [participationID]: {
+          ...current[participationID],
+          ...Object.fromEntries(personWeek.days.filter((day) => selected.has(day.date)).map((day) => [day.date, dayEditFromScheduleDay(day, mode)])),
+        },
+      }));
+    }
+  }
+
+  function updateDayDraft(participationID: string, date: string, update: Partial<DayEditState>) {
+    setDayDrafts((current) => ({
+      ...current,
+      [participationID]: {
+        ...current[participationID],
+        [date]: { ...current[participationID]?.[date], ...update },
+      },
+    }));
   }
 
   function updatePatternDay(index: number, update: Partial<PatternDayState>) {
@@ -309,31 +413,6 @@ export function ScheduleEditor({
           <button type="submit" disabled={isCreatingSchedule}>{isCreatingSchedule ? "Criando…" : "Criar escala"}</button>
         </form>
       </details>
-
-      <div className="editor-panel">
-        <h3>Registrar estado especial em uma data</h3>
-        {(selectedSchedule.participations?.length ?? 0) === 0 && !recentParticipation ? (
-          <p className="editor-empty">Inclua uma pessoa nesta escala para registrar férias, ausência ou atestado.</p>
-        ) : (
-          <form className="editor-inline-form" onSubmit={saveDateException}>
-            <label htmlFor="exception-participation">Participação</label>
-            <select id="exception-participation" value={exceptionParticipationID} onChange={(event) => setExceptionParticipationID(event.target.value)} required>
-              {[...(selectedSchedule.participations ?? []), ...(recentParticipation && !selectedSchedule.participations?.some((item) => item.id === recentParticipation.id) ? [recentParticipation] : [])].map((participation) => (
-                <option key={participation.id} value={participation.id}>{participation.person.name} · {participation.startDate}</option>
-              ))}
-            </select>
-            <label htmlFor="exception-date">Data</label>
-            <input id="exception-date" type="date" value={exceptionDate} onChange={(event) => setExceptionDate(event.target.value)} required />
-            <label htmlFor="exception-state">Estado especial</label>
-            <select id="exception-state" value={exceptionState} onChange={(event) => setExceptionState(event.target.value as DateException["state"])}>
-              <option value="vacation">Férias</option>
-              <option value="absence">Ausência</option>
-              <option value="medical_leave">Atestado</option>
-            </select>
-            <button type="submit" disabled={isSavingException || !exceptionDate}>{isSavingException ? "Salvando…" : "Salvar estado especial"}</button>
-          </form>
-        )}
-      </div>
 
       <div className="editor-panel">
         <h3>Cadastrar pessoa no Espaço</h3>
@@ -426,12 +505,113 @@ export function ScheduleEditor({
                 <h4>{personWeek.person.name}</h4>
                 <div className="week-grid">
                   {personWeek.days.map((day) => (
-                    <article className={`week-day week-day-${day.state}`} key={day.date}>
+                    <label className={`week-day week-day-${day.state}${(selectedDays[personWeek.participationId] ?? []).includes(day.date) ? " week-day-selected" : ""}`} key={day.date}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Selecionar ${weekdayNames[day.weekday - 1]} ${formatDate(day.date)} para edição`}
+                        checked={(selectedDays[personWeek.participationId] ?? []).includes(day.date)}
+                        disabled={day.state === "outside_participation"}
+                        onChange={(event) => toggleEditDay(personWeek.participationId, day, event.target.checked)}
+                      />
                       <span>{dayLabel(day.state)}</span>
                       {day.workPeriod && <small>{day.workPeriod.startTime}–{day.workPeriod.endTime}</small>}
-                    </article>
+                    </label>
                   ))}
                 </div>
+                <form className="week-edit-form" onSubmit={(event) => void saveScheduleEdit(event, personWeek)}>
+                  <fieldset className="pattern-fieldset">
+                    <legend>Editar datas de {personWeek.person.name}</legend>
+                    <div className="week-edit-modes">
+                      <label>
+                        <input
+                          type="radio"
+                          name={`edit-mode-${personWeek.participationId}`}
+                          checked={(editModes[personWeek.participationId] ?? "once") === "once"}
+                          onChange={() => changeEditMode(personWeek, "once")}
+                        />
+                        Somente as datas selecionadas
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`edit-mode-${personWeek.participationId}`}
+                          checked={editModes[personWeek.participationId] === "recurring"}
+                          disabled={week.isPastWeek}
+                          onChange={() => changeEditMode(personWeek, "recurring")}
+                        />
+                        Padrão recorrente desde segunda-feira, {formatDate(week.weekStart)}
+                      </label>
+                    </div>
+                    {week.isPastWeek && <p className="week-edit-help">Semanas passadas permitem apenas correções pontuais.</p>}
+                    {(selectedDays[personWeek.participationId] ?? []).length === 0 ? (
+                      <p className="week-edit-help">Selecione uma ou mais datas na programação acima.</p>
+                    ) : (
+                      <div className="week-edit-day-list">
+                        {personWeek.days.filter((day) => (selectedDays[personWeek.participationId] ?? []).includes(day.date)).map((day) => {
+                          const draft = dayDrafts[personWeek.participationId]?.[day.date] ?? dayEditFromScheduleDay(day, editModes[personWeek.participationId] ?? "once");
+                          const mode = editModes[personWeek.participationId] ?? "once";
+                          const id = `${personWeek.participationId}-${day.date}`;
+                          return (
+                            <div className="week-edit-day" key={day.date}>
+                              <strong>{weekdayNames[day.weekday - 1]} · {formatDate(day.date)}</strong>
+                              {mode === "once" && day.hasException && (
+                                <label className="remove-date-exception">
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.removeException}
+                                    onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { removeException: event.target.checked })}
+                                  />
+                                  Remover a exceção e usar o padrão semanal
+                                </label>
+                              )}
+                              {!(mode === "once" && day.hasException && draft.removeException) && <>
+                              <label htmlFor={`edit-state-${id}`}>Programação</label>
+                              <select id={`edit-state-${id}`} value={draft.state} onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { state: event.target.value as DateException["state"] })}>
+                                <option value="undefined">Não definido</option>
+                                <option value="day_off">Folga</option>
+                                <option value="work_period">Jornada</option>
+                                {mode === "once" && <>
+                                  <option value="vacation">Férias</option>
+                                  <option value="absence">Ausência</option>
+                                  <option value="medical_leave">Atestado</option>
+                                </>}
+                              </select>
+                              {draft.state === "work_period" && (
+                                <div className="week-edit-times">
+                                  <label htmlFor={`edit-start-${id}`}>Início</label>
+                                  <input id={`edit-start-${id}`} type="time" value={draft.startTime} onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { startTime: event.target.value })} required />
+                                  <label htmlFor={`edit-end-${id}`}>Fim</label>
+                                  <input id={`edit-end-${id}`} type="time" value={draft.endTime} onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { endTime: event.target.value })} required />
+                                  <label htmlFor={`edit-break-start-${id}`}>Intervalo, início</label>
+                                  <input id={`edit-break-start-${id}`} type="time" value={draft.breakStartTime} onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { breakStartTime: event.target.value })} />
+                                  <label htmlFor={`edit-break-end-${id}`}>Intervalo, fim</label>
+                                  <input id={`edit-break-end-${id}`} type="time" value={draft.breakEndTime} onChange={(event) => updateDayDraft(personWeek.participationId, day.date, { breakEndTime: event.target.value })} />
+                                </div>
+                              )}
+                              </>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {(editModes[personWeek.participationId] ?? "once") === "recurring" && (
+                      <fieldset className="week-edit-exceptions">
+                        <legend>Exceções nas pessoas e dias alterados</legend>
+                        <label>
+                          <input type="radio" name={`exceptions-${personWeek.participationId}`} checked={!(removeFutureExceptions[personWeek.participationId] ?? false)} onChange={() => setRemoveFutureExceptions((current) => ({ ...current, [personWeek.participationId]: false }))} />
+                          Preservar as exceções existentes (padrão)
+                        </label>
+                        <label>
+                          <input type="radio" name={`exceptions-${personWeek.participationId}`} checked={removeFutureExceptions[personWeek.participationId] ?? false} onChange={() => setRemoveFutureExceptions((current) => ({ ...current, [personWeek.participationId]: true }))} />
+                          Remover exceções futuras somente nos dias selecionados
+                        </label>
+                      </fieldset>
+                    )}
+                    <button className="primary-button" type="submit" disabled={isSavingEdit === personWeek.participationId || (selectedDays[personWeek.participationId] ?? []).length === 0}>
+                      {isSavingEdit === personWeek.participationId ? "Salvando…" : (editModes[personWeek.participationId] ?? "once") === "once" ? "Salvar alteração pontual" : "Salvar padrão recorrente"}
+                    </button>
+                  </fieldset>
+                </form>
               </section>
             ))}
           </div>
@@ -441,9 +621,62 @@ export function ScheduleEditor({
       </section>
 
       {message && <p className="notice success" role="status">{message}</p>}
-      {error && <p className="notice error" role="alert">{error}</p>}
+      {error && <div className="notice error" role="alert">
+        <p>{error}</p>
+        {conflictedParticipation && <button type="button" onClick={() => {
+          setError("");
+          setConflictedParticipation(null);
+          setReloadVersion((version) => version + 1);
+        }}>Reabrir semana</button>}
+      </div>}
     </section>
   );
+}
+
+function dayEditFromScheduleDay(day: ScheduleDay, mode: EditMode): DayEditState {
+  const pointState = day.state === "outside_participation" ? "undefined" : day.state;
+  const recurringState = day.patternState ?? (pointState === "vacation" || pointState === "absence" || pointState === "medical_leave" ? "undefined" : pointState);
+  const recurringPeriod = day.patternWorkPeriod ?? day.workPeriod;
+  const period = mode === "recurring" ? recurringPeriod : day.workPeriod;
+  return {
+    state: mode === "recurring" ? recurringState : pointState,
+    startTime: period?.startTime ?? "09:00",
+    endTime: period?.endTime ?? "17:00",
+    breakStartTime: period?.breakStartTime ?? "",
+    breakEndTime: period?.breakEndTime ?? "",
+    removeException: false,
+  };
+}
+
+function validDayDraft(draft: DayEditState, mode: EditMode): boolean {
+  if (mode === "recurring" && (draft.state === "vacation" || draft.state === "absence" || draft.state === "medical_leave")) return false;
+  if (draft.state !== "work_period") return true;
+  return draft.startTime !== "" && draft.endTime !== "" && Boolean(draft.breakStartTime) === Boolean(draft.breakEndTime);
+}
+
+function dateExceptionFromDraft(date: string, draft: DayEditState): DateException {
+  return {
+    date,
+    state: draft.state,
+    ...(draft.state === "work_period" ? { workPeriod: workPeriodFromDraft(draft) } : {}),
+  };
+}
+
+function patternDayFromDraft(weekday: number, draft: DayEditState): PatternDay {
+  return {
+    weekday,
+    state: draft.state as PatternDay["state"],
+    ...(draft.state === "work_period" ? { workPeriod: workPeriodFromDraft(draft) } : {}),
+  };
+}
+
+function workPeriodFromDraft(draft: DayEditState): WorkPeriod {
+  return {
+    startTime: draft.startTime,
+    endTime: draft.endTime,
+    ...(draft.breakStartTime ? { breakStartTime: draft.breakStartTime } : {}),
+    ...(draft.breakEndTime ? { breakEndTime: draft.breakEndTime } : {}),
+  };
 }
 
 function managementHeaders(token: string, headers: HeadersInit): Headers {

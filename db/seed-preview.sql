@@ -3,3 +3,8 @@ VALUES ('preview-space', 'Espaço de demonstração');
 
 INSERT OR IGNORE INTO schedules (id, management_space_id, name)
 VALUES ('preview-fixture', 'preview-space', 'Escala de demonstração');
+
+INSERT OR IGNORE INTO schedule_revisions (schedule_id, revision)
+SELECT id, lower(hex(randomblob(16)))
+FROM schedules
+WHERE id = 'preview-fixture';

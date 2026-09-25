@@ -143,11 +143,35 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
 .person-week { margin-top: 12px; }
 .person-week h4 { margin: 0 0 6px; color: #344a3e; font-size: 13px; }
 .week-day { display: flex; min-height: 65px; flex-direction: column; justify-content: center; gap: 4px; padding: 8px; border: 1px solid #e4ebe4; border-radius: 8px; color: #52645a; background: #fff; font-size: 10px; line-height: 1.35; }
+.week-day { align-items: flex-start; cursor: pointer; }
+.week-day input[type="checkbox"] { width: 16px; height: 16px; margin: 0 0 2px; accent-color: #28694d; }
+.week-day:has(input:disabled) { cursor: default; }
+.week-day-selected { outline: 2px solid #538067; outline-offset: 1px; }
 .week-day small { color: #346d4c; font-size: 10px; font-weight: 700; }
 .week-day-day_off { border-color: #d5e9d9; background: #f0f8f1; color: #2c6844; }
 .week-day-work_period { border-color: #cfe0d2; background: #f7fbf7; color: #244f37; }
 .week-day-outside_participation { border-style: dashed; color: #869189; background: #f7f8f6; }
 .week-day-undefined { color: #8a7b56; background: #fdfaf0; }
+.week-edit-form { margin-top: 10px; }
+.week-edit-form .pattern-fieldset { margin-top: 0; }
+.week-edit-modes, .week-edit-exceptions { display: grid; gap: 8px; }
+.week-edit-modes { margin-bottom: 10px; }
+.week-edit-modes label, .week-edit-exceptions label { display: flex; align-items: flex-start; gap: 8px; color: #44564a; font-size: 12px; line-height: 1.45; }
+.week-edit-modes input, .week-edit-exceptions input { width: 16px; height: 16px; margin: 0; accent-color: #28694d; }
+.week-edit-help { margin: 4px 0 12px; color: #75827a; font-size: 12px; line-height: 1.5; }
+.week-edit-day-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; margin: 12px 0; }
+.week-edit-day { display: grid; gap: 6px; padding: 12px; border: 1px solid #e2eae2; border-radius: 9px; background: #fff; }
+.week-edit-day strong { color: #344a3e; font-size: 12px; }
+.week-edit-day > label, .week-edit-times label { color: #52645a; font-size: 11px; font-weight: 600; }
+.week-edit-day > .remove-date-exception { display: flex; align-items: flex-start; gap: 8px; color: #44564a; font-size: 12px; line-height: 1.45; }
+.week-edit-day > .remove-date-exception input { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; padding: 0; accent-color: #28694d; }
+.week-edit-day select, .week-edit-day input { min-width: 0; height: 38px; padding: 0 8px; border: 1px solid #d9e3da; border-radius: 7px; background: #fff; color: #263b30; font-size: 12px; }
+.week-edit-times { display: grid; grid-template-columns: auto minmax(90px, 1fr); align-items: center; gap: 6px 8px; }
+.week-edit-exceptions { margin: 12px 0; padding: 12px; border: 1px solid #e2eae2; border-radius: 9px; }
+.week-edit-exceptions legend { padding: 0 4px; color: #344a3e; font-size: 12px; font-weight: 700; }
+.week-edit-form .primary-button { min-height: 42px; }
+.notice.error p { margin: 0; }
+.notice.error button { min-height: 36px; margin-top: 8px; padding: 0 12px; border: 1px solid #b97970; border-radius: 7px; color: #81423c; background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; }
 
 @media (max-width: 600px) {
   .editor-heading, .week-toolbar { align-items: flex-start; flex-direction: column; }

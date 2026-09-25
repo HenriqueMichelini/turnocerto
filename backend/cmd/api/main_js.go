@@ -17,10 +17,12 @@ import (
 
 const scheduleQuery = `SELECT schedules.id, schedules.name,
        schedules.time_zone AS scheduleTimeZone,
+       schedule_revisions.revision AS revision,
        management_spaces.id AS managementSpaceId,
        management_spaces.name AS managementSpaceName
 FROM schedules
 INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE schedules.id = ?`
 
 const renameScheduleQuery = `UPDATE schedules
@@ -49,9 +51,11 @@ const getManagementSpaceQuery = `SELECT management_spaces.id AS managementSpaceI
        management_spaces.name AS managementSpaceName,
        schedules.id AS scheduleId,
        schedules.name AS scheduleName,
-       schedules.time_zone AS scheduleTimeZone
+       schedules.time_zone AS scheduleTimeZone,
+       schedule_revisions.revision AS revision
 FROM management_spaces
 LEFT JOIN schedules ON schedules.management_space_id = management_spaces.id
+LEFT JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE management_spaces.id = ? AND management_spaces.management_token_hash = ?
 ORDER BY schedules.rowid`
 
@@ -65,10 +69,12 @@ WHERE id = ? AND management_space_id = ?
 
 const getManagementScheduleQuery = `SELECT schedules.id, schedules.name,
        schedules.time_zone AS scheduleTimeZone,
+       schedule_revisions.revision AS revision,
        management_spaces.id AS managementSpaceId,
        management_spaces.name AS managementSpaceName
 FROM schedules
 INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE schedules.id = ? AND management_spaces.id = ?`
 
 const updateManagementScheduleTimeZoneQuery = `UPDATE schedules
@@ -112,6 +118,10 @@ ORDER BY schedules.rowid, people.name COLLATE NOCASE, participations.start_date,
 const getParticipationExceptionsQuery = `SELECT participation_date_exceptions.participation_id AS participationId,
        participation_date_exceptions.exception_date AS exceptionDate,
        participation_date_exceptions.state AS state,
+       participation_date_exceptions.start_time AS startTime,
+       participation_date_exceptions.end_time AS endTime,
+       participation_date_exceptions.break_start_time AS breakStartTime,
+       participation_date_exceptions.break_end_time AS breakEndTime,
        schedules.id AS scheduleId
 FROM participation_date_exceptions
 INNER JOIN participations ON participations.id = participation_date_exceptions.participation_id
@@ -125,6 +135,19 @@ SELECT ?, management_spaces.id, ?, ?
 FROM management_spaces
 WHERE management_spaces.id = ? AND management_spaces.management_token_hash = ?`
 
+const createScheduleRevisionQuery = `INSERT INTO schedule_revisions (schedule_id, revision)
+VALUES (?, ?)`
+
+const updateScheduleRevisionQuery = `UPDATE schedule_revisions
+SET revision = ?
+WHERE schedule_id = ? AND revision = ?
+  AND EXISTS (
+    SELECT 1 FROM schedules
+    INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+    WHERE schedules.id = schedule_revisions.schedule_id
+      AND management_spaces.id = ? AND management_spaces.management_token_hash = ?
+  )`
+
 const createPersonForSpaceQuery = `INSERT INTO people (id, management_space_id, name)
 SELECT ?, management_spaces.id, ?
 FROM management_spaces
@@ -135,37 +158,96 @@ SELECT ?, schedules.id, people.id, ?, ?
 FROM schedules
 INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
 INNER JOIN people ON people.management_space_id = management_spaces.id AND people.id = ?
-WHERE management_spaces.id = ? AND schedules.id = ? AND management_spaces.management_token_hash = ?`
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
+WHERE management_spaces.id = ? AND schedules.id = ? AND management_spaces.management_token_hash = ?
+  AND schedule_revisions.revision = ?`
 
 const createWeeklyPatternQuery = `INSERT INTO weekly_patterns (id, participation_id, effective_from)
 SELECT ?, participations.id, ?
 FROM participations
 INNER JOIN schedules ON schedules.id = participations.schedule_id
 INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE management_spaces.id = ? AND schedules.id = ? AND participations.id = ?
-  AND management_spaces.management_token_hash = ?`
+  AND management_spaces.management_token_hash = ? AND schedule_revisions.revision = ?`
 
 const createWeeklyPatternDayQuery = `INSERT INTO weekly_pattern_days
   (weekly_pattern_id, weekday, state, start_time, end_time, break_start_time, break_end_time)
-VALUES (?, ?, ?, ?, ?, ?, ?)`
+SELECT ?, ?, ?, ?, ?, ?, ?
+WHERE EXISTS (
+  SELECT 1 FROM weekly_patterns
+  INNER JOIN participations ON participations.id = weekly_patterns.participation_id
+  INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = participations.schedule_id
+  WHERE weekly_patterns.id = ? AND schedule_revisions.revision = ?
+)`
 
-const createDateExceptionQuery = `INSERT INTO participation_date_exceptions
-  (id, participation_id, exception_date, state)
-SELECT ?, participations.id, ?, ?
+const updateScheduleRevisionForEditQuery = `UPDATE schedule_revisions
+SET revision = ?
+WHERE schedule_id = ? AND revision = ?
+  AND EXISTS (
+    SELECT 1 FROM schedules
+    INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+    WHERE schedules.id = schedule_revisions.schedule_id
+      AND management_spaces.id = ?
+      AND management_spaces.management_token_hash = ?
+  )`
+
+const deleteWeeklyPatternOnRevisionQuery = `DELETE FROM weekly_patterns
+WHERE participation_id = ? AND effective_from = ?
+  AND EXISTS (
+    SELECT 1 FROM participations
+    INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = participations.schedule_id
+    WHERE participations.id = weekly_patterns.participation_id AND schedule_revisions.revision = ?
+  )`
+
+const createVersionedWeeklyPatternQuery = `INSERT INTO weekly_patterns (id, participation_id, effective_from)
+SELECT ?, participations.id, ?
 FROM participations
 INNER JOIN schedules ON schedules.id = participations.schedule_id
 INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE management_spaces.id = ? AND schedules.id = ? AND participations.id = ?
-  AND management_spaces.management_token_hash = ?
+  AND management_spaces.management_token_hash = ? AND schedule_revisions.revision = ?`
+
+const createVersionedWeeklyPatternDayQuery = `INSERT INTO weekly_pattern_days
+  (weekly_pattern_id, weekday, state, start_time, end_time, break_start_time, break_end_time)
+SELECT ?, ?, ?, ?, ?, ?, ?
+WHERE EXISTS (
+  SELECT 1 FROM participations
+  INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = participations.schedule_id
+  WHERE participations.id = ? AND schedule_revisions.revision = ?
+)`
+
+const createParticipationDateExceptionQuery = `INSERT INTO participation_date_exceptions
+  (id, participation_id, exception_date, state, start_time, end_time, break_start_time, break_end_time)
+SELECT ?, participations.id, ?, ?, ?, ?, ?, ?
+FROM participations
+INNER JOIN schedules ON schedules.id = participations.schedule_id
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
+WHERE management_spaces.id = ? AND schedules.id = ? AND participations.id = ?
+  AND management_spaces.management_token_hash = ? AND schedule_revisions.revision = ?
 ON CONFLICT (participation_id, exception_date) DO UPDATE
-SET id = excluded.id, state = excluded.state`
+SET id = excluded.id, state = excluded.state, start_time = excluded.start_time,
+    end_time = excluded.end_time, break_start_time = excluded.break_start_time,
+    break_end_time = excluded.break_end_time`
 
-const getParticipationScopeQuery = `SELECT participations.id, participations.start_date, participations.end_date, schedules.time_zone
-FROM participations
-INNER JOIN schedules ON schedules.id = participations.schedule_id
-INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
-WHERE management_spaces.id = ? AND schedules.id = ? AND participations.id = ?
-  AND management_spaces.management_token_hash = ?`
+const deleteFutureExceptionsOnRevisionPrefix = `DELETE FROM participation_date_exceptions
+WHERE participation_id = ? AND exception_date >= ?
+  AND ((CAST(strftime('%w', exception_date) AS INTEGER) + 6) % 7 + 1) IN (%s)
+  AND EXISTS (
+    SELECT 1 FROM participations
+    INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = participations.schedule_id
+    WHERE participations.id = participation_date_exceptions.participation_id AND schedule_revisions.revision = ?
+  )`
+
+const deleteDateExceptionQuery = `DELETE FROM participation_date_exceptions
+WHERE participation_id = ? AND exception_date = ?
+  AND EXISTS (
+    SELECT 1 FROM participations
+    INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = participations.schedule_id
+    WHERE participations.id = participation_date_exceptions.participation_id AND schedule_revisions.revision = ?
+  )`
 
 type d1Store struct {
 	database js.Value
@@ -304,6 +386,7 @@ func (store d1Store) GetSchedule(_ context.Context, id string) (schedule.Schedul
 		ID:       row.Get("id").String(),
 		Name:     row.Get("name").String(),
 		TimeZone: row.Get("scheduleTimeZone").String(),
+		Revision: valueString(row.Get("revision")),
 		ManagementSpace: schedule.ManagementSpace{
 			ID:   row.Get("managementSpaceId").String(),
 			Name: row.Get("managementSpaceName").String(),
@@ -322,6 +405,7 @@ func (store d1Store) CreateManagementSpace(_ context.Context, managementSpace sc
 	statements := js.Global().Get("Array").New()
 	statements.Call("push", store.database.Call("prepare", createManagementSpaceQuery).Call("bind", managementSpace.ID, managementSpace.Name, tokenHash))
 	statements.Call("push", store.database.Call("prepare", createManagementScheduleQuery).Call("bind", firstSchedule.ID, managementSpace.ID, firstSchedule.Name, firstSchedule.TimeZone))
+	statements.Call("push", store.database.Call("prepare", createScheduleRevisionQuery).Call("bind", firstSchedule.ID, firstSchedule.Revision))
 	if _, err := awaitPromise(store.database.Call("batch", statements)); err != nil {
 		return err
 	}
@@ -358,6 +442,7 @@ func (store d1Store) GetManagementSpace(_ context.Context, id, tokenHash string)
 			ID:              scheduleID.String(),
 			Name:            row.Get("scheduleName").String(),
 			TimeZone:        row.Get("scheduleTimeZone").String(),
+			Revision:        valueString(row.Get("revision")),
 			ManagementSpace: managementSpace,
 			Participations:  make([]schedule.WeekParticipation, 0),
 		})
@@ -486,10 +571,19 @@ func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view 
 		}
 		calendar := view.Schedules[participationRef.scheduleIndex]
 		participation := calendar.Participations[participationRef.participationIndex]
-		participation.DateExceptions = append(participation.DateExceptions, schedule.DateException{
+		exception := schedule.DateException{
 			Date:  valueString(row.Get("exceptionDate")),
 			State: valueString(row.Get("state")),
-		})
+		}
+		if exception.State == schedule.DayStateWorkPeriod {
+			exception.WorkPeriod = &schedule.WorkPeriod{
+				StartTime:      valueString(row.Get("startTime")),
+				EndTime:        valueString(row.Get("endTime")),
+				BreakStartTime: valueString(row.Get("breakStartTime")),
+				BreakEndTime:   valueString(row.Get("breakEndTime")),
+			}
+		}
+		participation.DateExceptions = append(participation.DateExceptions, exception)
 		calendar.Participations[participationRef.participationIndex] = participation
 		view.Schedules[participationRef.scheduleIndex] = calendar
 	}
@@ -497,7 +591,14 @@ func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view 
 }
 
 func (store d1Store) CreateSchedule(ctx context.Context, spaceID, tokenHash string, newSchedule schedule.Schedule) error {
-	changes, err := store.runPreparedChanges(createScheduleForSpaceQuery, newSchedule.ID, newSchedule.Name, newSchedule.TimeZone, spaceID, tokenHash)
+	statements := js.Global().Get("Array").New()
+	statements.Call("push", store.database.Call("prepare", createScheduleForSpaceQuery).Call("bind", newSchedule.ID, newSchedule.Name, newSchedule.TimeZone, spaceID, tokenHash))
+	statements.Call("push", store.database.Call("prepare", createScheduleRevisionQuery).Call("bind", newSchedule.ID, newSchedule.Revision))
+	result, err := awaitPromise(store.database.Call("batch", statements))
+	if err != nil {
+		return err
+	}
+	changes, err := safeNumber(result.Index(0).Get("meta").Get("changes"))
 	if err != nil {
 		return err
 	}
@@ -547,13 +648,17 @@ func (store d1Store) UpdateScheduleTimeZone(ctx context.Context, spaceID, schedu
 	return schedule.Schedule{}, schedule.ErrNotFound
 }
 
-func (store d1Store) CreateParticipation(ctx context.Context, spaceID, scheduleID, tokenHash string, participation schedule.WeekParticipation) error {
+func (store d1Store) CreateParticipation(ctx context.Context, spaceID, scheduleID, tokenHash string, participation schedule.WeekParticipation, expectedRevision, nextRevision string) error {
 	view, err := store.GetManagementSpace(ctx, spaceID, tokenHash)
 	if err != nil {
 		return err
 	}
-	if !containsSchedule(view.Schedules, scheduleID) || !containsPerson(view.People, participation.Person.ID) {
+	calendar, found := managementSchedule(view, scheduleID)
+	if !found || !containsPerson(view.People, participation.Person.ID) {
 		return schedule.ErrNotFound
+	}
+	if calendar.Revision != expectedRevision {
+		return schedule.ErrStaleScheduleEdit
 	}
 	if len(participation.PatternVersions) != 1 {
 		return schedule.ErrInvalidScheduleWeek
@@ -564,74 +669,189 @@ func (store d1Store) CreateParticipation(ctx context.Context, spaceID, scheduleI
 	if participation.ParticipationEnd != nil {
 		endDate = *participation.ParticipationEnd
 	}
-	statements.Call("push", store.database.Call("prepare", createParticipationQuery).Call("bind", participation.ID, participation.ParticipationStart, endDate, participation.Person.ID, spaceID, scheduleID, tokenHash))
-	store.appendWeeklyPatternStatements(statements, spaceID, scheduleID, participation.ID, tokenHash, pattern)
-	_, err = awaitPromise(store.database.Call("batch", statements))
-	return err
-}
-
-func (store d1Store) CreateWeeklyPattern(ctx context.Context, spaceID, scheduleID, participationID, tokenHash string, pattern schedule.WeeklyPattern) error {
-	scope, err := store.firstPreparedRow(getParticipationScopeQuery, spaceID, scheduleID, participationID, tokenHash)
+	statements.Call("push", store.database.Call("prepare", updateScheduleRevisionQuery).Call("bind", nextRevision, scheduleID, expectedRevision, spaceID, tokenHash))
+	statements.Call("push", store.database.Call("prepare", createParticipationQuery).Call("bind", participation.ID, participation.ParticipationStart, endDate, participation.Person.ID, spaceID, scheduleID, tokenHash, nextRevision))
+	store.appendWeeklyPatternStatements(statements, spaceID, scheduleID, participation.ID, tokenHash, nextRevision, pattern)
+	result, err := awaitPromise(store.database.Call("batch", statements))
 	if err != nil {
 		return err
 	}
-	if scope.IsNull() || scope.IsUndefined() {
-		if _, authErr := store.GetManagementSpace(ctx, spaceID, tokenHash); authErr != nil {
-			return schedule.ErrUnauthorized
-		}
+	changes, err := safeNumber(result.Index(0).Get("meta").Get("changes"))
+	if err != nil {
+		return err
+	}
+	if changes == 1 {
+		return nil
+	}
+	currentView, err := store.GetManagementSpace(ctx, spaceID, tokenHash)
+	if err != nil {
+		return err
+	}
+	current, found := managementSchedule(currentView, scheduleID)
+	if !found {
 		return schedule.ErrNotFound
 	}
-	participationStart := valueString(scope.Get("start_date"))
-	if pattern.EffectiveFrom <= participationStart {
-		return schedule.ErrInvalidScheduleWeek
+	if current.Revision != expectedRevision {
+		return schedule.ErrStaleScheduleEdit
 	}
-	timeZone := valueString(scope.Get("time_zone"))
-	location, err := time.LoadLocation(timeZone)
+	return schedule.ErrNotFound
+}
+
+func (store d1Store) SaveScheduleEdit(ctx context.Context, spaceID, scheduleID, participationID, tokenHash string, edit schedule.ScheduleEdit, nextRevision string) error {
+	view, err := store.GetManagementSpace(ctx, spaceID, tokenHash)
 	if err != nil {
-		return schedule.ErrInvalidScheduleWeek
+		return err
 	}
-	localNow := time.Now().In(location)
-	weekStart := localNow.AddDate(0, 0, -((int(localNow.Weekday()) + 6) % 7)).Format("2006-01-02")
-	if pattern.EffectiveFrom < weekStart {
-		return schedule.ErrInvalidScheduleWeek
+	calendar, found := managementSchedule(view, scheduleID)
+	if !found {
+		return schedule.ErrNotFound
 	}
+	participation, found := managementParticipation(view, scheduleID, participationID)
+	if !found {
+		return schedule.ErrNotFound
+	}
+	if calendar.Revision != edit.Revision {
+		return schedule.ErrStaleScheduleEdit
+	}
+	if err := schedule.ValidateScheduleEdit(calendar, participation, edit, time.Now()); err != nil {
+		return err
+	}
+
 	statements := js.Global().Get("Array").New()
-	store.appendWeeklyPatternStatements(statements, spaceID, scheduleID, participationID, tokenHash, pattern)
-	_, err = awaitPromise(store.database.Call("batch", statements))
-	return err
-}
-
-func (store d1Store) CreateDateException(ctx context.Context, spaceID, scheduleID, participationID, tokenHash string, exception schedule.DateException) error {
-	scope, err := store.firstPreparedRow(getParticipationScopeQuery, spaceID, scheduleID, participationID, tokenHash)
-	if err != nil {
-		return err
-	}
-	if scope.IsNull() || scope.IsUndefined() {
-		if _, authErr := store.GetManagementSpace(ctx, spaceID, tokenHash); authErr != nil {
-			return schedule.ErrUnauthorized
+	statements.Call("push", store.database.Call("prepare", updateScheduleRevisionForEditQuery).Call("bind", nextRevision, scheduleID, edit.Revision, spaceID, tokenHash))
+	if edit.Mode == schedule.ScheduleEditOnce {
+		for _, exception := range edit.Dates {
+			startTime, endTime, breakStartTime, breakEndTime := workPeriodDatabaseValues(exception.WorkPeriod)
+			statements.Call("push", store.database.Call("prepare", createParticipationDateExceptionQuery).Call("bind",
+				exception.ID, exception.Date, exception.State, startTime, endTime, breakStartTime, breakEndTime,
+				spaceID, scheduleID, participationID, tokenHash, nextRevision))
 		}
-		return schedule.ErrNotFound
+		for _, date := range edit.RemoveDates {
+			statements.Call("push", store.database.Call("prepare", deleteDateExceptionQuery).Call("bind", participationID, date, nextRevision))
+		}
+	} else {
+		pattern, err := effectivePatternForWeek(participation.PatternVersions, edit.WeekStart)
+		if err != nil {
+			return err
+		}
+		for _, update := range edit.Weekdays {
+			pattern.Weekdays[update.Weekday-1] = update
+		}
+		pattern.ID = edit.PatternID
+		pattern.EffectiveFrom = edit.WeekStart
+		statements.Call("push", store.database.Call("prepare", deleteWeeklyPatternOnRevisionQuery).Call("bind", participationID, edit.WeekStart, nextRevision))
+		statements.Call("push", store.database.Call("prepare", createVersionedWeeklyPatternQuery).Call("bind",
+			pattern.ID, pattern.EffectiveFrom, spaceID, scheduleID, participationID, tokenHash, nextRevision))
+		for _, day := range pattern.Weekdays {
+			startTime, endTime, breakStartTime, breakEndTime := workPeriodDatabaseValues(day.WorkPeriod)
+			statements.Call("push", store.database.Call("prepare", createVersionedWeeklyPatternDayQuery).Call("bind",
+				pattern.ID, day.Weekday, day.State, startTime, endTime, breakStartTime, breakEndTime,
+				participationID, nextRevision))
+		}
+		if edit.RemoveFutureExceptions {
+			cutoff, err := schedule.FutureExceptionStartDate(calendar, edit.WeekStart, time.Now())
+			if err != nil {
+				return err
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(edit.Weekdays)), ",")
+			query := strings.Replace(deleteFutureExceptionsOnRevisionPrefix, "%s", placeholders, 1)
+			bindings := []any{participationID, cutoff}
+			for _, day := range edit.Weekdays {
+				bindings = append(bindings, day.Weekday)
+			}
+			bindings = append(bindings, nextRevision)
+			statements.Call("push", store.database.Call("prepare", query).Call("bind", bindings...))
+		}
 	}
-	if schedule.ValidateDateException(exception) != nil {
-		return schedule.ErrInvalidScheduleWeek
-	}
-	startDate := valueString(scope.Get("start_date"))
-	endDate := optionalString(scope.Get("end_date"))
-	if exception.Date < startDate || (endDate != nil && exception.Date > *endDate) {
-		return schedule.ErrInvalidScheduleWeek
-	}
-	changes, err := store.runPreparedChanges(createDateExceptionQuery, exception.ID, exception.Date, exception.State, spaceID, scheduleID, participationID, tokenHash)
+
+	result, err := awaitPromise(store.database.Call("batch", statements))
 	if err != nil {
 		return err
 	}
-	if changes != 1 {
+	changes, err := safeNumber(result.Index(0).Get("meta").Get("changes"))
+	if err != nil {
+		return err
+	}
+	if changes == 1 {
+		return nil
+	}
+	currentView, err := store.GetManagementSpace(ctx, spaceID, tokenHash)
+	if err != nil {
+		return err
+	}
+	current, found := managementSchedule(currentView, scheduleID)
+	if !found {
 		return schedule.ErrNotFound
 	}
-	return nil
+	if current.Revision != edit.Revision {
+		return schedule.ErrStaleScheduleEdit
+	}
+	return schedule.ErrNotFound
 }
 
-func (store d1Store) appendWeeklyPatternStatements(statements js.Value, spaceID, scheduleID, participationID, tokenHash string, pattern schedule.WeeklyPattern) {
-	statements.Call("push", store.database.Call("prepare", createWeeklyPatternQuery).Call("bind", pattern.ID, pattern.EffectiveFrom, spaceID, scheduleID, participationID, tokenHash))
+func workPeriodDatabaseValues(period *schedule.WorkPeriod) (startTime, endTime, breakStartTime, breakEndTime any) {
+	if period == nil {
+		return nil, nil, nil, nil
+	}
+	startTime = period.StartTime
+	endTime = period.EndTime
+	if period.BreakStartTime != "" {
+		breakStartTime = period.BreakStartTime
+		breakEndTime = period.BreakEndTime
+	}
+	return startTime, endTime, breakStartTime, breakEndTime
+}
+
+func effectivePatternForWeek(versions []schedule.WeeklyPattern, weekStart string) (schedule.WeeklyPattern, error) {
+	var selected *schedule.WeeklyPattern
+	for index := range versions {
+		if versions[index].EffectiveFrom <= weekStart && (selected == nil || versions[index].EffectiveFrom > selected.EffectiveFrom) {
+			selected = &versions[index]
+		}
+	}
+	if selected == nil {
+		return schedule.WeeklyPattern{}, schedule.ErrInvalidScheduleWeek
+	}
+	pattern := schedule.WeeklyPattern{EffectiveFrom: weekStart, Weekdays: make([]schedule.PatternDay, 7)}
+	for weekday := 1; weekday <= 7; weekday++ {
+		pattern.Weekdays[weekday-1] = recurringPatternDay(*selected, weekday)
+	}
+	return pattern, nil
+}
+
+func managementSchedule(view schedule.ManagementSpaceView, scheduleID string) (schedule.Schedule, bool) {
+	for _, calendar := range view.Schedules {
+		if calendar.ID == scheduleID {
+			return calendar, true
+		}
+	}
+	return schedule.Schedule{}, false
+}
+
+func managementParticipation(view schedule.ManagementSpaceView, scheduleID, participationID string) (schedule.WeekParticipation, bool) {
+	calendar, found := managementSchedule(view, scheduleID)
+	if !found {
+		return schedule.WeekParticipation{}, false
+	}
+	for _, participation := range calendar.Participations {
+		if participation.ID == participationID {
+			return participation, true
+		}
+	}
+	return schedule.WeekParticipation{}, false
+}
+
+func recurringPatternDay(pattern schedule.WeeklyPattern, weekday int) schedule.PatternDay {
+	for _, day := range pattern.Weekdays {
+		if day.Weekday == weekday {
+			return day
+		}
+	}
+	return schedule.PatternDay{Weekday: weekday, State: schedule.DayStateUndefined}
+}
+
+func (store d1Store) appendWeeklyPatternStatements(statements js.Value, spaceID, scheduleID, participationID, tokenHash, revision string, pattern schedule.WeeklyPattern) {
+	statements.Call("push", store.database.Call("prepare", createWeeklyPatternQuery).Call("bind", pattern.ID, pattern.EffectiveFrom, spaceID, scheduleID, participationID, tokenHash, revision))
 	for _, day := range pattern.Weekdays {
 		var startTime, endTime, breakStartTime, breakEndTime any
 		if day.WorkPeriod != nil {
@@ -642,7 +862,7 @@ func (store d1Store) appendWeeklyPatternStatements(statements js.Value, spaceID,
 				breakEndTime = day.WorkPeriod.BreakEndTime
 			}
 		}
-		statements.Call("push", store.database.Call("prepare", createWeeklyPatternDayQuery).Call("bind", pattern.ID, day.Weekday, day.State, startTime, endTime, breakStartTime, breakEndTime))
+		statements.Call("push", store.database.Call("prepare", createWeeklyPatternDayQuery).Call("bind", pattern.ID, day.Weekday, day.State, startTime, endTime, breakStartTime, breakEndTime, pattern.ID, revision))
 	}
 }
 
@@ -696,6 +916,7 @@ func (store d1Store) RenameManagementSchedule(ctx context.Context, spaceID, sche
 		ID:       row.Get("id").String(),
 		Name:     row.Get("name").String(),
 		TimeZone: row.Get("scheduleTimeZone").String(),
+		Revision: valueString(row.Get("revision")),
 		ManagementSpace: schedule.ManagementSpace{
 			ID:   row.Get("managementSpaceId").String(),
 			Name: row.Get("managementSpaceName").String(),

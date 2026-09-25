@@ -82,7 +82,7 @@ func TestScheduleWeekCurrentBoundaryUsesScheduleTimeZone(t *testing.T) {
 	}
 }
 
-func TestScheduleWeekAppliesDateSpecificSpecialStateOverWeeklyPattern(t *testing.T) {
+func TestScheduleWeekAppliesDateExceptionsOverWeeklyPattern(t *testing.T) {
 	participation := schedule.WeekParticipation{
 		ID:                 "participation-1",
 		Person:             schedule.Person{ID: "person-1", Name: "Ana"},
@@ -96,7 +96,10 @@ func TestScheduleWeekAppliesDateSpecificSpecialStateOverWeeklyPattern(t *testing
 				{Weekday: 4, State: schedule.DayStateDayOff}, {Weekday: 5, State: schedule.DayStateDayOff},
 				{Weekday: 6, State: schedule.DayStateDayOff}, {Weekday: 7, State: schedule.DayStateDayOff}},
 		}},
-		DateExceptions: []schedule.DateException{{Date: "2026-09-11", State: schedule.DayStateVacation}},
+		DateExceptions: []schedule.DateException{
+			{Date: "2026-09-11", State: schedule.DayStateVacation},
+			{Date: "2026-09-12", State: schedule.DayStateWorkPeriod, WorkPeriod: &schedule.WorkPeriod{StartTime: "10:00", EndTime: "14:00"}},
+		},
 	}
 	week, err := schedule.DeriveScheduleWeek(schedule.Schedule{ID: "schedule-1", TimeZone: "UTC"}, "2026-09-07", []schedule.WeekParticipation{participation}, time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -107,6 +110,12 @@ func TestScheduleWeekAppliesDateSpecificSpecialStateOverWeeklyPattern(t *testing
 	}
 	if got := week.People[0].Days[3].State; got != schedule.DayStateDayOff {
 		t.Fatalf("Thursday without exception = %q, want day off", got)
+	}
+	if got := week.People[0].Days[5].State; got != schedule.DayStateWorkPeriod {
+		t.Fatalf("Saturday work exception = %q, want work_period", got)
+	}
+	if got := week.People[0].Days[5].WorkPeriod.EndTime; got != "14:00" {
+		t.Fatalf("Saturday work exception ends at %q, want 14:00", got)
 	}
 }
 

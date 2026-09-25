@@ -6,8 +6,19 @@
   "workers_dev": true,
   "vars": {
     "APP_ENV": "production",
-    "WEB_ORIGIN": "https://turnocerto.pages.dev"
+    "WEB_ORIGIN": "https://turnocerto.pages.dev",
+    "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev"
   },
+  "ratelimits": [
+    {
+      "name": "CREATION_RATE_LIMITER",
+      "namespace_id": "9209252501",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -21,8 +32,19 @@
       "name": "turnocerto-api-production",
       "vars": {
         "APP_ENV": "production",
-        "WEB_ORIGIN": "https://turnocerto.pages.dev"
+        "WEB_ORIGIN": "https://turnocerto.pages.dev",
+        "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev"
       },
+      "ratelimits": [
+        {
+          "name": "CREATION_RATE_LIMITER",
+          "namespace_id": "9209252501",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        }
+      ],
       "d1_databases": [
         {
           "binding": "DB",
@@ -36,8 +58,19 @@
       "name": "turnocerto-api-preview",
       "vars": {
         "APP_ENV": "preview",
-        "WEB_ORIGIN": "https://preview.turnocerto.pages.dev"
+        "WEB_ORIGIN": "https://preview.turnocerto.pages.dev",
+        "TURNSTILE_ALLOWED_HOSTNAME": "preview.turnocerto.pages.dev"
       },
+      "ratelimits": [
+        {
+          "name": "CREATION_RATE_LIMITER",
+          "namespace_id": "9209252502",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        }
+      ],
       "d1_databases": [
         {
           "binding": "DB",

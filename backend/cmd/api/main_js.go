@@ -25,6 +25,40 @@ const renameScheduleQuery = `UPDATE schedules
 SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?`
 
+const createManagementSpaceQuery = `INSERT INTO management_spaces (id, name, management_token_hash)
+VALUES (?, ?, ?)`
+
+const createManagementScheduleQuery = `INSERT INTO schedules (id, management_space_id, name)
+VALUES (?, ?, ?)`
+
+const renameManagementSpaceQuery = `UPDATE management_spaces
+SET name = ?
+WHERE id = ?`
+
+const getManagementSpaceNameQuery = `SELECT id, name
+FROM management_spaces
+WHERE id = ?`
+
+const getManagementSpaceQuery = `SELECT management_spaces.id AS managementSpaceId,
+       management_spaces.name AS managementSpaceName,
+       schedules.id AS scheduleId,
+       schedules.name AS scheduleName
+FROM management_spaces
+LEFT JOIN schedules ON schedules.management_space_id = management_spaces.id
+WHERE management_spaces.id = ? AND management_spaces.management_token_hash = ?
+ORDER BY schedules.rowid`
+
+const renameManagementScheduleQuery = `UPDATE schedules
+SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND management_space_id = ?`
+
+const getManagementScheduleQuery = `SELECT schedules.id, schedules.name,
+       management_spaces.id AS managementSpaceId,
+       management_spaces.name AS managementSpaceName
+FROM schedules
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+WHERE schedules.id = ? AND management_spaces.id = ?`
+
 type d1Store struct {
 	database js.Value
 }
@@ -38,6 +72,10 @@ type workerResponse struct {
 	header http.Header
 	status int
 	body   bytes.Buffer
+}
+
+type cloudflareRateLimiter struct {
+	binding js.Value
 }
 
 func (response *workerResponse) Header() http.Header {
@@ -97,7 +135,7 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	method := requestValue.Get("method").String()
 	url := requestValue.Get("url").String()
 	body := ""
-	if method == http.MethodPatch {
+	if method == http.MethodPatch || method == http.MethodPost {
 		bodyValue, err := awaitPromise(requestValue.Call("text"))
 		if err != nil {
 			return failureResponse(requestValue, env)
@@ -120,12 +158,22 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	if authorization := headerValue(requestValue, "authorization"); authorization != "" {
 		request.Header.Set("Authorization", authorization)
 	}
+	if clientIP := headerValue(requestValue, "cf-connecting-ip"); clientIP != "" {
+		request.Header.Set("CF-Connecting-IP", clientIP)
+	}
 
 	store := d1Store{database: env.Get("DB")}
-	appEnv := env.Get("APP_ENV").String()
-	webOrigin := env.Get("WEB_ORIGIN").String()
-	previewTokenHash := env.Get("PREVIEW_TOKEN_HASH").String()
-	handler := schedule.NewHTTPHandler(store, appEnv, webOrigin, previewTokenHash)
+	appEnv := environmentValue(env, "APP_ENV")
+	webOrigin := environmentValue(env, "WEB_ORIGIN")
+	previewTokenHash := environmentValue(env, "PREVIEW_TOKEN_HASH")
+	security := schedule.ManagementSecurity{
+		ChallengeVerifier: schedule.NewTurnstileVerifier(environmentValue(env, "TURNSTILE_SECRET_KEY")),
+		CreationRateLimiter: cloudflareRateLimiter{
+			binding: env.Get("CREATION_RATE_LIMITER"),
+		},
+		ChallengeHostname: environmentValue(env, "TURNSTILE_ALLOWED_HOSTNAME"),
+	}
+	handler := schedule.NewHTTPHandlerWithManagement(store, store, appEnv, webOrigin, previewTokenHash, security)
 	responseRecorder := &workerResponse{header: make(http.Header)}
 	handler.ServeHTTP(responseRecorder, request)
 	status := responseRecorder.status
@@ -155,19 +203,124 @@ func (store d1Store) GetSchedule(_ context.Context, id string) (schedule.Schedul
 }
 
 func (store d1Store) RenameSchedule(ctx context.Context, id, name string) (schedule.Schedule, error) {
-	statement := store.database.Call("prepare", renameScheduleQuery).Call("bind", name, id)
-	result, err := awaitPromise(statement.Call("run"))
+	if err := store.runPreparedUpdate(renameScheduleQuery, name, id); err != nil {
+		return schedule.Schedule{}, err
+	}
+	return store.GetSchedule(ctx, id)
+}
+
+func (store d1Store) CreateManagementSpace(_ context.Context, managementSpace schedule.ManagementSpace, firstSchedule schedule.Schedule, tokenHash string) error {
+	statements := js.Global().Get("Array").New()
+	statements.Call("push", store.database.Call("prepare", createManagementSpaceQuery).Call("bind", managementSpace.ID, managementSpace.Name, tokenHash))
+	statements.Call("push", store.database.Call("prepare", createManagementScheduleQuery).Call("bind", firstSchedule.ID, managementSpace.ID, firstSchedule.Name))
+	if _, err := awaitPromise(store.database.Call("batch", statements)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (store d1Store) GetManagementSpace(_ context.Context, id, tokenHash string) (schedule.ManagementSpaceView, error) {
+	statement := store.database.Call("prepare", getManagementSpaceQuery).Call("bind", id, tokenHash)
+	result, err := awaitPromise(statement.Call("all"))
+	if err != nil {
+		return schedule.ManagementSpaceView{}, err
+	}
+	rows := result.Get("results")
+	if rows.IsUndefined() || rows.IsNull() || rows.Length() == 0 {
+		return schedule.ManagementSpaceView{}, schedule.ErrUnauthorized
+	}
+	first := rows.Index(0)
+	managementSpace := schedule.ManagementSpace{
+		ID:   first.Get("managementSpaceId").String(),
+		Name: first.Get("managementSpaceName").String(),
+	}
+	view := schedule.ManagementSpaceView{ManagementSpace: managementSpace, Schedules: make([]schedule.Schedule, 0, rows.Length())}
+	for index := 0; index < rows.Length(); index++ {
+		row := rows.Index(index)
+		scheduleID := row.Get("scheduleId")
+		if scheduleID.IsNull() || scheduleID.IsUndefined() {
+			continue
+		}
+		view.Schedules = append(view.Schedules, schedule.Schedule{
+			ID:              scheduleID.String(),
+			Name:            row.Get("scheduleName").String(),
+			ManagementSpace: managementSpace,
+		})
+	}
+	return view, nil
+}
+
+func (store d1Store) RenameManagementSpace(_ context.Context, id, name string) (schedule.ManagementSpace, error) {
+	if err := store.runPreparedUpdate(renameManagementSpaceQuery, name, id); err != nil {
+		return schedule.ManagementSpace{}, err
+	}
+	row, err := store.firstPreparedRow(getManagementSpaceNameQuery, id)
+	if err != nil {
+		return schedule.ManagementSpace{}, err
+	}
+	if row.IsNull() || row.IsUndefined() {
+		return schedule.ManagementSpace{}, schedule.ErrNotFound
+	}
+	return schedule.ManagementSpace{ID: row.Get("id").String(), Name: row.Get("name").String()}, nil
+}
+
+func (store d1Store) RenameManagementSchedule(ctx context.Context, spaceID, scheduleID, name string) (schedule.Schedule, error) {
+	if err := store.runPreparedUpdate(renameManagementScheduleQuery, name, scheduleID, spaceID); err != nil {
+		return schedule.Schedule{}, err
+	}
+	row, err := store.firstPreparedRow(getManagementScheduleQuery, scheduleID, spaceID)
 	if err != nil {
 		return schedule.Schedule{}, err
+	}
+	if row.IsNull() || row.IsUndefined() {
+		return schedule.Schedule{}, schedule.ErrNotFound
+	}
+	return schedule.Schedule{
+		ID:   row.Get("id").String(),
+		Name: row.Get("name").String(),
+		ManagementSpace: schedule.ManagementSpace{
+			ID:   row.Get("managementSpaceId").String(),
+			Name: row.Get("managementSpaceName").String(),
+		},
+	}, nil
+}
+
+func (store d1Store) runPreparedUpdate(query string, bindings ...any) error {
+	statement := store.database.Call("prepare", query).Call("bind", bindings...)
+	result, err := awaitPromise(statement.Call("run"))
+	if err != nil {
+		return err
 	}
 	changes, err := safeNumber(result.Get("meta").Get("changes"))
 	if err != nil {
-		return schedule.Schedule{}, err
+		return err
 	}
 	if changes != 1 {
-		return schedule.Schedule{}, schedule.ErrNotFound
+		return schedule.ErrNotFound
 	}
-	return store.GetSchedule(ctx, id)
+	return nil
+}
+
+func (store d1Store) firstPreparedRow(query string, bindings ...any) (js.Value, error) {
+	statement := store.database.Call("prepare", query).Call("bind", bindings...)
+	return awaitPromise(statement.Call("first"))
+}
+
+func (limiter cloudflareRateLimiter) Allow(_ context.Context, key string) (bool, error) {
+	if limiter.binding.IsUndefined() || limiter.binding.IsNull() {
+		return false, errors.New("creation rate limit binding is not configured")
+	}
+	options := js.Global().Get("Object").New()
+	options.Set("key", key)
+	result, err := awaitPromise(limiter.binding.Call("limit", options))
+	if err != nil {
+		return false, err
+	}
+	success := result.Get("success")
+	if success.Type() != js.TypeBoolean {
+		return false, errors.New("creation rate limit returned an invalid result")
+	}
+	return success.Bool(), nil
 }
 
 func awaitPromise(promise js.Value) (js.Value, error) {
@@ -212,6 +365,14 @@ func headerValue(request js.Value, name string) string {
 	return value.String()
 }
 
+func environmentValue(env js.Value, name string) string {
+	value := env.Get(name)
+	if value.IsUndefined() || value.IsNull() {
+		return ""
+	}
+	return value.String()
+}
+
 func jsResponse(status int, headers http.Header, body []byte) js.Value {
 	jsHeaders := js.Global().Get("Object").New()
 	for name, values := range headers {
@@ -238,7 +399,7 @@ func failureResponse(request, env js.Value) js.Value {
 	headers.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	if origin := headerValue(request, "origin"); origin != "" && origin == env.Get("WEB_ORIGIN").String() {
 		headers.Set("Access-Control-Allow-Origin", origin)
-		headers.Set("Access-Control-Allow-Methods", "GET, PATCH, OPTIONS")
+		headers.Set("Access-Control-Allow-Methods", "GET, PATCH, POST, OPTIONS")
 		headers.Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
 		headers.Set("Access-Control-Max-Age", "600")
 		headers.Set("Vary", "Origin")

@@ -11,8 +11,11 @@ type GoRequestHandler = (request: Request, env: WorkerEnvironment) => Promise<Re
 
 interface WorkerEnvironment {
   APP_ENV: string;
+  CREATION_RATE_LIMITER: RateLimit;
   DB: D1Database;
   PREVIEW_TOKEN_HASH?: string;
+  TURNSTILE_ALLOWED_HOSTNAME?: string;
+  TURNSTILE_SECRET_KEY?: string;
   WEB_ORIGIN: string;
 }
 

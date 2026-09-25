@@ -18,9 +18,30 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   const previewDatabase = preview?.d1_databases?.find((database) => database.binding === "DB");
   const productionDatabase = production?.d1_databases?.find((database) => database.binding === "DB");
   const defaultDatabase = config.d1_databases?.find((database) => database.binding === "DB");
+  const previewRateLimit = preview?.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
+  const productionRateLimit = production?.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
+  const defaultRateLimit = config.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
 
   if (!previewDatabase || !productionDatabase || !defaultDatabase) {
     throw new Error("The default, preview, and production environments must define the DB binding.");
+  }
+  if (!previewRateLimit || !productionRateLimit || !defaultRateLimit) {
+    throw new Error("The default, preview, and production environments must define CREATION_RATE_LIMITER.");
+  }
+  if (
+    previewRateLimit.namespace_id === productionRateLimit.namespace_id ||
+    defaultRateLimit.namespace_id !== productionRateLimit.namespace_id
+  ) {
+    throw new Error("Preview and production must use different rate-limit namespaces, and the default must match production.");
+  }
+  for (const rateLimit of [previewRateLimit, productionRateLimit, defaultRateLimit]) {
+    if (
+      !Number.isSafeInteger(rateLimit.simple?.limit) ||
+      rateLimit.simple.limit < 1 ||
+      ![10, 60].includes(rateLimit.simple.period)
+    ) {
+      throw new Error("CREATION_RATE_LIMITER must define a positive limit and a 10- or 60-second period.");
+    }
   }
   if (previewDatabase.database_id === productionDatabase.database_id) {
     throw new Error("Preview and production must use different D1 database IDs.");
@@ -42,6 +63,7 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   }
   for (const environment of [preview, production, config]) {
     const webOrigin = environment.vars?.WEB_ORIGIN;
+    const challengeHostname = environment.vars?.TURNSTILE_ALLOWED_HOSTNAME;
     let parsedOrigin;
     try {
       parsedOrigin = new URL(webOrigin);
@@ -55,6 +77,9 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
       parsedOrigin.hash
     ) {
       throw new Error("Every API Worker environment must set WEB_ORIGIN to an HTTPS site origin.");
+    }
+    if (challengeHostname !== parsedOrigin.hostname) {
+      throw new Error("TURNSTILE_ALLOWED_HOSTNAME must match the exact WEB_ORIGIN hostname.");
     }
   }
   if (config.vars?.APP_ENV !== "production") {

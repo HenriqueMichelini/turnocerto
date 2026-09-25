@@ -68,4 +68,37 @@ describe("Go API Worker D1 environment safety", () => {
       /WEB_ORIGIN to an HTTPS site origin/,
     );
   });
+
+  it("uses separate rate-limit namespaces for preview and production", () => {
+    const previewLimit = config.env.preview.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
+    const productionLimit = config.env.production.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
+    const defaultLimit = config.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
+
+    assert.ok(previewLimit && productionLimit && defaultLimit);
+    assert.notEqual(previewLimit.namespace_id, productionLimit.namespace_id);
+    assert.equal(defaultLimit.namespace_id, productionLimit.namespace_id);
+    assert.equal(previewLimit.simple.limit, 10);
+    assert.equal(previewLimit.simple.period, 60);
+    assert.match(checkDeploymentConfiguration(config, "preview"), /isolated D1/);
+  });
+
+  it("rejects a missing or shared anonymous-creation rate-limit binding", () => {
+    const withoutPreviewLimit = structuredClone(config);
+    withoutPreviewLimit.env.preview.ratelimits = [];
+    assert.throws(() => checkDeploymentConfiguration(withoutPreviewLimit, "preview"), /CREATION_RATE_LIMITER/);
+
+    const sharedNamespace = structuredClone(config);
+    sharedNamespace.env.preview.ratelimits[0].namespace_id = sharedNamespace.env.production.ratelimits[0].namespace_id;
+    assert.throws(() => checkDeploymentConfiguration(sharedNamespace, "preview"), /different rate-limit namespaces/);
+  });
+
+  it("requires Turnstile validation to match each exact site hostname", () => {
+    const unsafeConfig = structuredClone(config);
+    unsafeConfig.env.preview.vars.TURNSTILE_ALLOWED_HOSTNAME = "example.com";
+
+    assert.throws(
+      () => checkDeploymentConfiguration(unsafeConfig, "preview"),
+      /TURNSTILE_ALLOWED_HOSTNAME must match/,
+    );
+  });
 });

@@ -58,6 +58,19 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
 .input-row button { min-width: 132px; height: 46px; padding: 0 16px; border: 0; border-radius: 9px; color: #fff; background: #28694d; font-size: 13px; font-weight: 700; cursor: pointer; transition: background .15s ease; }
 .input-row button:hover:not(:disabled) { background: #20573f; }
 .input-row button:disabled { opacity: .52; cursor: not-allowed; }
+.field-stack { margin-bottom: 18px; }
+.field-stack input { width: 100%; height: 46px; padding: 0 13px; border: 1px solid #d9e3da; border-radius: 9px; outline: none; background: #fff; color: #263b30; font-size: 14px; }
+.field-stack input:focus { border-color: #5b9a70; box-shadow: 0 0 0 3px rgba(91, 154, 112, .14); }
+.turnstile-slot { min-height: 68px; margin: 4px 0 17px; }
+.primary-button { min-height: 48px; padding: 0 18px; border: 0; border-radius: 9px; color: #fff; background: #28694d; font-size: 14px; font-weight: 700; cursor: pointer; }
+.primary-button:hover:not(:disabled) { background: #20573f; }
+.primary-button:disabled { opacity: .52; cursor: not-allowed; }
+.management-link-panel { margin-top: 23px; padding-top: 22px; border-top: 1px solid #edf1ed; }
+.management-link-panel label { display: block; margin-bottom: 8px; color: #44564a; font-size: 13px; font-weight: 600; }
+.management-link-panel input { font-size: 12px; }
+.management-link-panel .input-row button { min-width: 118px; }
+.text-button { display: inline-flex; min-height: 44px; align-items: center; margin-top: 18px; padding: 0; border: 0; background: none; color: #28694d; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.empty-state { margin-bottom: 20px; color: #66766b; font-size: 14px; line-height: 1.6; }
 .form-hint { margin: 9px 0 0; color: #849088; font-size: 12px; }
 .loading-card { padding: 34px; border: 1px solid #e1e9e1; border-radius: 16px; background: white; color: #66766b; }
 .notice { margin: 14px 0 0; padding: 12px 14px; border-radius: 9px; font-size: 13px; }
@@ -77,6 +90,7 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
   .calendar-icon { width: 43px; height: 43px; }
   .input-row { flex-direction: column; }
   .input-row button { width: 100%; }
+  .primary-button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

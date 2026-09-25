@@ -22,6 +22,8 @@ const wranglerCli = resolve(repositoryRoot, "node_modules/wrangler/bin/wrangler.
 const playwrightCli = resolve(repositoryRoot, "node_modules/@playwright/test/cli.js");
 const apiUrl = "http://127.0.0.1:8787";
 const frontendUrl = "http://127.0.0.1:8788";
+const turnstileTestSiteKey = "1x00000000000000000000AA";
+const turnstileTestSecretKey = "1x0000000000000000000000000000000AA";
 const stateDirectory = resolve(repositoryRoot, `.wrangler/e2e-${targetEnvironment}-state`);
 const localArgs = ["--config", apiConfigPath, "--env", targetEnvironment, "--local", "--persist-to", stateDirectory];
 const runWrangler = (args) =>
@@ -41,7 +43,11 @@ execFileSync(process.execPath, [resolve(repositoryRoot, "scripts/build-api.mjs")
 execFileSync("npm", ["run", "build"], {
   cwd: repositoryRoot,
   stdio: "inherit",
-  env: { ...process.env, VITE_API_BASE_URL: apiUrl },
+  env: {
+    ...process.env,
+    VITE_API_BASE_URL: apiUrl,
+    VITE_TURNSTILE_SITE_KEY: turnstileTestSiteKey,
+  },
 });
 
 const processes = [];
@@ -69,6 +75,10 @@ const apiServer = start([
   stateDirectory,
   "--var",
   "WEB_ORIGIN:http://127.0.0.1:8788",
+  "--var",
+  `TURNSTILE_SECRET_KEY:${turnstileTestSecretKey}`,
+  "--var",
+  "TURNSTILE_ALLOWED_HOSTNAME:example.com",
   ...(previewTokenHash ? ["--var", `PREVIEW_TOKEN_HASH:${previewTokenHash}`] : []),
 ]);
 const frontendServer = start([viteCli, "preview", "--host", "127.0.0.1", "--port", "8788", "--strictPort"]);

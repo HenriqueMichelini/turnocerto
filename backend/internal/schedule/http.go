@@ -12,7 +12,6 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 )
 
 const (
@@ -40,15 +39,29 @@ type Store interface {
 }
 
 type handler struct {
-	store            Store
-	appEnv           string
-	webOrigin        string
-	previewTokenHash []byte
+	store              Store
+	managementStore    ManagementSpaceStore
+	managementSecurity ManagementSecurity
+	appEnv             string
+	webOrigin          string
+	previewTokenHash   []byte
 }
 
 func NewHTTPHandler(store Store, appEnv, webOrigin, previewTokenHashHex string) http.Handler {
 	previewTokenHash, _ := hex.DecodeString(previewTokenHashHex)
 	return &handler{store: store, appEnv: appEnv, webOrigin: webOrigin, previewTokenHash: previewTokenHash}
+}
+
+func NewHTTPHandlerWithManagement(store Store, managementStore ManagementSpaceStore, appEnv, webOrigin, previewTokenHashHex string, security ManagementSecurity) http.Handler {
+	previewTokenHash, _ := hex.DecodeString(previewTokenHashHex)
+	return &handler{
+		store:              store,
+		managementStore:    managementStore,
+		managementSecurity: security,
+		appEnv:             appEnv,
+		webOrigin:          webOrigin,
+		previewTokenHash:   previewTokenHash,
+	}
 }
 
 func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -67,6 +80,14 @@ func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Reques
 			return
 		}
 		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if request.URL.Path == managementSpacesPath {
+		api.createManagementSpace(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, managementSpacesPath+"/") {
+		api.managementSpaceRequest(response, request)
 		return
 	}
 	if api.appEnv != "preview" || request.URL.Path != "/api/schedules/"+PreviewScheduleID {
@@ -119,37 +140,16 @@ func (api *handler) get(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *handler) rename(response http.ResponseWriter, request *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type")
-		return
-	}
-	if request.ContentLength > maximumRequestSize {
-		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(request.Body, maximumRequestSize+1))
-	if err != nil || len(body) > maximumRequestSize {
-		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
-		return
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
 	var payload struct {
 		Name string `json:"name"`
 	}
-	if err := decoder.Decode(&payload); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
+	if err := decodeJSONBody(request, maximumRequestSize, &payload); err != nil {
+		writeJSONBodyError(response, err, "invalid_schedule_name")
 		return
 	}
 
 	name := strings.TrimSpace(payload.Name)
-	if name == "" || utf8.RuneCountInString(name) > maximumNameLength {
+	if !validName(name) {
 		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
 		return
 	}
@@ -160,6 +160,39 @@ func (api *handler) rename(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 	writeSchedule(response, schedule)
+}
+
+var errUnsupportedJSONMediaType = errors.New("unsupported JSON media type")
+
+func decodeJSONBody(request *http.Request, maximumSize int64, payload any) error {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return errUnsupportedJSONMediaType
+	}
+	if request.ContentLength > maximumSize {
+		return errors.New("JSON body exceeds maximum size")
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, maximumSize+1))
+	if err != nil || int64(len(body)) > maximumSize {
+		return errors.New("could not read JSON body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(payload); err != nil {
+		return errors.New("invalid JSON body")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("invalid trailing JSON data")
+	}
+	return nil
+}
+
+func writeJSONBodyError(response http.ResponseWriter, err error, invalidBodyCode string) {
+	if errors.Is(err, errUnsupportedJSONMediaType) {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type")
+		return
+	}
+	writeError(response, http.StatusBadRequest, invalidBodyCode)
 }
 
 func setPrivateHeaders(headers http.Header) {
@@ -174,13 +207,18 @@ func setPrivateHeaders(headers http.Header) {
 
 func setCorsHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
-	headers.Set("Access-Control-Allow-Methods", "GET, PATCH, OPTIONS")
+	headers.Set("Access-Control-Allow-Methods", "GET, PATCH, POST, OPTIONS")
 	headers.Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
 	headers.Set("Access-Control-Max-Age", "600")
 	headers.Set("Vary", "Origin")
 }
 
 func writeStoreError(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrUnauthorized) {
+		response.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if errors.Is(err, ErrNotFound) {
 		writeError(response, http.StatusNotFound, "not_found")
 		return

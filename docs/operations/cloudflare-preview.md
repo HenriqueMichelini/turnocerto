@@ -6,6 +6,12 @@ The original issue #1 described a Pages Function. The later Go requirement in `d
 
 The Pages preview alias serves a public static shell. Go requires the invitation token before it reads or changes the preview schedule, and this ticket seeds synthetic demo data only. Do not place real private schedules or credentials in this fixture. The invitation URL is a bearer credential and should be shared privately.
 
+## Anonymous Management Space creation
+
+Anonymous creation is served by the Go API Worker. Each create request must pass Turnstile Siteverify before Go stores the Space and its first schedule. The Management Link can rename both the Space and its schedules. Go stores only the SHA-256 hash of the randomly generated Management Link credential; the raw credential is returned once and kept in the URL fragment by the browser until it moves into tab session storage. Private requests carry it only in the `Authorization` header. Losing the link loses editing access; there is no email recovery. The API applies a Cloudflare Rate Limiting binding before challenge validation and returns a user-readable `429` response when the configured creation limit is reached.
+
+For each environment, create a Turnstile widget restricted to that environment's exact Pages hostname (`preview.turnocerto.pages.dev` for preview and `turnocerto.pages.dev` for production). Configure its public site key as `VITE_TURNSTILE_SITE_KEY` for the Pages build, and store the matching secret in that environment's API Worker with `npx wrangler secret put TURNSTILE_SECRET_KEY --config wrangler.api.jsonc --env preview`. The Worker configuration pins `TURNSTILE_ALLOWED_HOSTNAME` to the expected hostname and deployment-config checks require it to match `WEB_ORIGIN`. Never use the public test keys outside local integration tests. The creation limit is 10 requests per 60 seconds per Rate Limiting key; Cloudflare's binding is local to a data-center location and eventually consistent, so Turnstile validation remains required on every attempt.
+
 ## Free-plan resource scope
 
 The expected preview and production setup is one Pages project, two API Workers, and two D1 databases. Current Cloudflare Free limits allow 100 Pages projects, 100 Workers, and 10 D1 databases per account. Workers Free allows 100,000 requests per day and 10 ms CPU per invocation. D1 Free allows 500 MB per database, 5 GB per account, 5 million rows read and 100,000 rows written per day, with seven-day point-in-time recovery. The built Worker bundle for this change is 5.87 MiB uncompressed against the current 64 MiB Worker limit. Local execution is not proof of deployed CPU usage, availability, backup recovery, cellular performance, or capacity for 1,000 management spaces; measure those separately before public launch.
@@ -27,20 +33,21 @@ Creating the production D1 database establishes isolation but this ticket does n
 
 ## Local development and integration tests
 
-Install dependencies with `npm ci`. `npm run test:go` runs Go unit tests. `npm run typecheck` checks the frontend and Worker bridge. `npm run test:integration` builds Go to WebAssembly, runs Go unit and configuration tests, then starts a local Wrangler Worker/D1 and Vite site for Playwright. The preview case uses an ephemeral token, opens the invitation link, renames, reloads, and restores its seeded schedule. It also confirms missing and incorrect tokens are rejected before database access. The production case checks that the preview fixture is unavailable. These local commands use Wrangler's local state and do not contact remote D1.
+Install dependencies with `npm ci`. `npm run test:go` runs Go unit tests. `npm run typecheck` checks the frontend and Worker bridge. `npm run test:integration` builds Go to WebAssembly, runs Go unit and configuration tests, then starts a local Wrangler Worker/D1 and Vite site for Playwright. The preview case uses an ephemeral invitation token, opens the invitation link, renames, reloads, and restores its seeded schedule. Management Space browser coverage exercises creation with Cloudflare's published local test credentials, link reopen and rename, challenge rejection, rate limiting, and credential scope. It also confirms the preview fixture is unavailable in production and that missing and incorrect credentials are rejected. These local commands use Wrangler's local state and do not contact remote D1.
 
 The Go Wasm runtime starts inside the request handler because its event loop uses timers, which cannot be initialized in Workers global scope. `worker/index.ts` passes the platform `Request` and environment bindings to Go; it does not implement application behavior.
 
 ## Preview migration and deployment
 
-Once the preview resources are configured:
+Once the preview resources and a preview-hostname Turnstile widget are configured:
 
 1. Apply the schema and preview-only demo data with `npm run db:preview`. This writes only to `turnocerto-preview`.
-2. Deploy the API with `npm run deploy:api:preview`. Copy the `workers.dev` origin Wrangler reports for `turnocerto-api-preview`.
-3. Confirm preview `WEB_ORIGIN` matches `https://preview.turnocerto.pages.dev`, then deploy Pages with the API URL in the frontend build:
+2. Set the preview Turnstile secret with `npx wrangler secret put TURNSTILE_SECRET_KEY --config wrangler.api.jsonc --env preview`. Keep the secret out of the repository and terminal logs. Deploy the API with `npm run deploy:api:preview`. Copy the `workers.dev` origin Wrangler reports for `turnocerto-api-preview`.
+3. Confirm preview `WEB_ORIGIN` matches `https://preview.turnocerto.pages.dev`, then deploy Pages with the API URL and public Turnstile site key in the frontend build:
 
    ```sh
-   VITE_API_BASE_URL=https://turnocerto-api-preview.<account-subdomain>.workers.dev npm run deploy:pages:preview
+   VITE_API_BASE_URL=https://turnocerto-api-preview.<account-subdomain>.workers.dev \
+   VITE_TURNSTILE_SITE_KEY=<preview-widget-site-key> npm run deploy:pages:preview
    ```
 
    Replace the example host with the origin Wrangler reported. The command rejects placeholder D1 IDs, placeholder site origins, and missing or non-HTTPS API origins.

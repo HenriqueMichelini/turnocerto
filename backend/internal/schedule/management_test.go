@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/HenriqueMichelini/turnocerto/backend/internal/schedule"
 )
 
 type managementSpaceStore struct {
+	mu                     sync.Mutex
 	createdManagementSpace schedule.ManagementSpace
 	createdSchedule        schedule.Schedule
 	credentialHash         string
@@ -44,10 +46,20 @@ func (store *managementSpaceStore) GetManagementSpace(_ context.Context, spaceID
 	return space, nil
 }
 
-func (store *managementSpaceStore) RenameManagementSpace(_ context.Context, spaceID, name string) (schedule.ManagementSpace, error) {
+func (store *managementSpaceStore) ReplaceManagementToken(_ context.Context, spaceID, currentTokenHash, nextTokenHash string) (bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.spaces[spaceID]; !exists || store.tokenHashes[spaceID] != currentTokenHash {
+		return false, nil
+	}
+	store.tokenHashes[spaceID] = nextTokenHash
+	return true, nil
+}
+
+func (store *managementSpaceStore) RenameManagementSpace(_ context.Context, spaceID, tokenHash, name string) (schedule.ManagementSpace, error) {
 	space, exists := store.spaces[spaceID]
-	if !exists {
-		return schedule.ManagementSpace{}, schedule.ErrNotFound
+	if !exists || store.tokenHashes[spaceID] != tokenHash {
+		return schedule.ManagementSpace{}, schedule.ErrUnauthorized
 	}
 	space.ManagementSpace.Name = name
 	for index := range space.Schedules {
@@ -57,10 +69,10 @@ func (store *managementSpaceStore) RenameManagementSpace(_ context.Context, spac
 	return space.ManagementSpace, nil
 }
 
-func (store *managementSpaceStore) RenameManagementSchedule(_ context.Context, spaceID, scheduleID, name string) (schedule.Schedule, error) {
+func (store *managementSpaceStore) RenameManagementSchedule(_ context.Context, spaceID, scheduleID, tokenHash, name string) (schedule.Schedule, error) {
 	space, exists := store.spaces[spaceID]
-	if !exists {
-		return schedule.Schedule{}, schedule.ErrNotFound
+	if !exists || store.tokenHashes[spaceID] != tokenHash {
+		return schedule.Schedule{}, schedule.ErrUnauthorized
 	}
 	for index := range space.Schedules {
 		if space.Schedules[index].ID == scheduleID {
@@ -238,6 +250,122 @@ func TestManagementLinkCanRenameItsSpaceAndOnlyThatSpace(t *testing.T) {
 	reloaded := managementRequest(handler, http.MethodGet, path, token, "")
 	if reloaded.Code != http.StatusOK || !strings.Contains(reloaded.Body.String(), `"name":"Clínica Aurora"`) {
 		t.Fatalf("GET after Space rename = %d %s, want persisted name", reloaded.Code, reloaded.Body)
+	}
+}
+
+func TestManagementLinkReplacementRevokesOldCredentialAndPreservesSpace(t *testing.T) {
+	store := &managementSpaceStore{
+		spaces:      map[string]schedule.ManagementSpaceView{},
+		tokenHashes: map[string]string{},
+	}
+	space := schedule.ManagementSpace{ID: "2e7b2b68-bc17-4f5d-9c50-4f6e4e290238", Name: "Clínica"}
+	firstSchedule := schedule.Schedule{ID: "7dd21a89-9741-4a5e-8c6d-5e6ea23fce14", Name: "Semana", ManagementSpace: space}
+	oldToken := strings.Repeat("a", 43)
+	otherSpace := schedule.ManagementSpace{ID: "35c6453f-73bf-4d67-9c22-8e4b3b52c3fd", Name: "Outro Espaço"}
+	otherToken := strings.Repeat("b", 43)
+	store.spaces[space.ID] = schedule.ManagementSpaceView{ManagementSpace: space, Schedules: []schedule.Schedule{firstSchedule}}
+	store.tokenHashes[space.ID] = hashManagementToken(oldToken)
+	store.spaces[otherSpace.ID] = schedule.ManagementSpaceView{ManagementSpace: otherSpace}
+	store.tokenHashes[otherSpace.ID] = hashManagementToken(otherToken)
+	handler := schedule.NewHTTPHandlerWithManagement(&memoryScheduleStore{}, store, "preview", previewOrigin, "", schedule.ManagementSecurity{})
+	path := "/api/management-spaces/" + space.ID + "/management-link"
+
+	wrongSpace := managementRequest(handler, http.MethodPost, "/api/management-spaces/"+otherSpace.ID+"/management-link", oldToken, "")
+	if wrongSpace.Code != http.StatusUnauthorized {
+		t.Fatalf("POST for another Space with the current token = %d %s, want 401", wrongSpace.Code, wrongSpace.Body)
+	}
+	otherSpaceRead := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+otherSpace.ID, otherToken, "")
+	if otherSpaceRead.Code != http.StatusOK {
+		t.Fatalf("other Space's credential after denied replacement = %d %s, want 200", otherSpaceRead.Code, otherSpaceRead.Body)
+	}
+
+	rotated := managementRequest(handler, http.MethodPost, path, oldToken, "")
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("POST with the current credential = %d %s, want 200", rotated.Code, rotated.Body)
+	}
+	var result struct {
+		ManagementToken string `json:"managementToken"`
+	}
+	if err := json.Unmarshal(rotated.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode replacement response: %v", err)
+	}
+	if len(result.ManagementToken) != 43 || result.ManagementToken == oldToken {
+		t.Fatalf("replacement token length/value is invalid: %q", result.ManagementToken)
+	}
+	if got, want := store.tokenHashes[space.ID], hashManagementToken(result.ManagementToken); got != want {
+		t.Fatal("store must retain only the hash of the replacement token")
+	}
+	if strings.Contains(rotated.Body.String(), store.tokenHashes[space.ID]) {
+		t.Fatal("replacement response exposed the stored token hash")
+	}
+	for _, header := range []struct{ name, want string }{
+		{"Cache-Control", "no-store"},
+		{"Referrer-Policy", "no-referrer"},
+		{"X-Robots-Tag", "noindex"},
+	} {
+		if got := rotated.Header().Get(header.name); !strings.Contains(got, header.want) {
+			t.Errorf("%s = %q, want it to contain %q", header.name, got, header.want)
+		}
+	}
+
+	oldRead := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+space.ID, oldToken, "")
+	if oldRead.Code != http.StatusUnauthorized {
+		t.Errorf("old credential GET = %d, want 401", oldRead.Code)
+	}
+	oldWrite := managementRequest(handler, http.MethodPatch, "/api/management-spaces/"+space.ID+"/schedules/"+firstSchedule.ID, oldToken, `{"name":"Denied"}`)
+	if oldWrite.Code != http.StatusUnauthorized {
+		t.Errorf("old credential PATCH = %d, want 401", oldWrite.Code)
+	}
+	newRead := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+space.ID, result.ManagementToken, "")
+	if newRead.Code != http.StatusOK || !strings.Contains(newRead.Body.String(), `"id":"`+firstSchedule.ID+`"`) {
+		t.Fatalf("replacement credential GET = %d %s, want the unchanged Space and Schedule", newRead.Code, newRead.Body)
+	}
+	newWrite := managementRequest(handler, http.MethodPatch, "/api/management-spaces/"+space.ID+"/schedules/"+firstSchedule.ID, result.ManagementToken, `{"name":"Turno novo"}`)
+	if newWrite.Code != http.StatusOK {
+		t.Fatalf("replacement credential PATCH = %d %s, want 200", newWrite.Code, newWrite.Body)
+	}
+	oldAgain := managementRequest(handler, http.MethodPost, path, oldToken, "")
+	if oldAgain.Code != http.StatusUnauthorized {
+		t.Errorf("old credential replacement retry = %d, want 401", oldAgain.Code)
+	}
+}
+
+func TestConcurrentManagementLinkReplacementHasOneWinner(t *testing.T) {
+	store := &managementSpaceStore{
+		spaces:      map[string]schedule.ManagementSpaceView{},
+		tokenHashes: map[string]string{},
+	}
+	space := schedule.ManagementSpace{ID: "2e7b2b68-bc17-4f5d-9c50-4f6e4e290238", Name: "Clínica"}
+	oldToken := strings.Repeat("a", 43)
+	store.spaces[space.ID] = schedule.ManagementSpaceView{ManagementSpace: space}
+	store.tokenHashes[space.ID] = hashManagementToken(oldToken)
+	handler := schedule.NewHTTPHandlerWithManagement(&memoryScheduleStore{}, store, "preview", previewOrigin, "", schedule.ManagementSecurity{})
+	path := "/api/management-spaces/" + space.ID + "/management-link"
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		go func() { responses <- managementRequest(handler, http.MethodPost, path, oldToken, "") }()
+	}
+
+	statuses := map[int]int{}
+	var winnerToken string
+	for range 2 {
+		response := <-responses
+		statuses[response.Code]++
+		if response.Code == http.StatusOK {
+			var result struct {
+				ManagementToken string `json:"managementToken"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatalf("decode winning replacement response: %v", err)
+			}
+			winnerToken = result.ManagementToken
+		}
+	}
+	if statuses[http.StatusOK] != 1 || statuses[http.StatusUnauthorized] != 1 {
+		t.Fatalf("concurrent replacement statuses = %#v, want one 200 and one 401", statuses)
+	}
+	if winnerToken == "" || store.tokenHashes[space.ID] != hashManagementToken(winnerToken) {
+		t.Fatal("the sole winning credential must be the only credential retained by the store")
 	}
 }
 

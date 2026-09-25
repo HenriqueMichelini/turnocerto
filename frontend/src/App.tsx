@@ -25,6 +25,10 @@ interface ManagementSpaceResponse {
   managementToken: string;
 }
 
+interface ManagementTokenResponse {
+  managementToken: string;
+}
+
 class ManagementRequestError extends Error {
   constructor(readonly status: number) {
     super("Management request failed");
@@ -269,6 +273,7 @@ function ManagementSpaceApp() {
   const [isSavingSpace, setIsSavingSpace] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
+  const [isReplacingManagementLink, setIsReplacingManagementLink] = useState(false);
   const [managementLink, setManagementLink] = useState(
     managementCredentials ? buildManagementLink(managementCredentials.spaceID, managementCredentials.token) : "",
   );
@@ -486,6 +491,40 @@ function ManagementSpaceApp() {
     }
   }
 
+  async function replaceManagementLink() {
+    if (!space || isReplacingManagementLink) return;
+    const confirmed = window.confirm("Substituir o link invalida imediatamente o link atual. Guarde o novo link para não perder o acesso de edição. Deseja continuar?");
+    if (!confirmed) return;
+
+    setIsReplacingManagementLink(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`${managementApiUrl}/${encodeURIComponent(space.id)}/management-link`, {
+        method: "POST",
+        headers: managementRequestHeaders(managementToken, { Accept: "application/json" }),
+      });
+      if (response.status === 401) {
+        throw new ManagementRequestError(response.status);
+      }
+      if (!response.ok) throw new Error("replacement_failed");
+
+      const result = (await response.json()) as ManagementTokenResponse;
+      persistManagementCredentials(space.id, result.managementToken);
+      setManagementToken(result.managementToken);
+      setManagementLink(buildManagementLink(space.id, result.managementToken));
+      setMessage("Novo link criado. Guarde-o antes de fechar esta página; o link anterior foi invalidado.");
+    } catch (replacementError) {
+      if (replacementError instanceof ManagementRequestError && replacementError.status === 401) {
+        setError("Este link já foi substituído. Abra o link de gestão atual para continuar.");
+      } else {
+        setError("Não foi possível substituir o link de gestão. Tente novamente.");
+      }
+    } finally {
+      setIsReplacingManagementLink(false);
+    }
+  }
+
   function startAnotherSpace() {
     if (spaceID) {
       try {
@@ -624,6 +663,10 @@ function ManagementSpaceApp() {
                 </button>
               </div>
               <p className="form-hint">Qualquer pessoa com este link pode editar o Espaço de gestão. Guarde-o em local seguro.</p>
+              <p className="form-hint">Ao substituir o link, o atual deixa de funcionar imediatamente. Guarde o novo link para manter o acesso de edição.</p>
+              <button className="text-button" type="button" onClick={() => void replaceManagementLink()} disabled={isReplacingManagementLink}>
+                {isReplacingManagementLink ? "Substituindo link…" : "Substituir link de gestão"}
+              </button>
             </div>
             <button className="text-button" type="button" onClick={startAnotherSpace}>Criar outro Espaço de gestão</button>
           </section>

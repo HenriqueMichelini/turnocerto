@@ -25,9 +25,13 @@ async function useTestTurnstile(page: Page, token = validChallengeToken) {
   );
 }
 
-async function createManagementSpace(request: APIRequestContext, name: string) {
+async function createManagementSpace(request: APIRequestContext, name: string, clientIP?: string) {
   return request.post(creationUrl, {
-    headers: { Origin: webOrigin, "Content-Type": "application/json" },
+    headers: {
+      Origin: webOrigin,
+      "Content-Type": "application/json",
+      ...(clientIP ? { "CF-Connecting-IP": clientIP } : {}),
+    },
     data: { spaceName: name, scheduleName: "Primeira escala", turnstileToken: validChallengeToken },
   });
 }
@@ -137,6 +141,95 @@ test("private Space requests reject missing, incorrect, and out-of-scope credent
   });
   expect(otherSchedule.status()).toBe(404);
   expect(await otherSchedule.text()).not.toContain(result.managementToken);
+});
+
+test("only the current Management Link can replace a credential and concurrent requests have one winner", async ({ request }) => {
+  const created = await createManagementSpace(request, "Espaço com link substituível", "198.51.100.20");
+  expect(created.status()).toBe(201);
+  const initial = await created.json() as {
+    managementSpace: { id: string };
+    schedule: { id: string; name: string };
+    managementToken: string;
+  };
+  const spaceURL = `${apiBaseUrl}/api/management-spaces/${initial.managementSpace.id}`;
+  const replaceURL = `${spaceURL}/management-link`;
+  const oldAuthorization = { Origin: webOrigin, Authorization: `Bearer ${initial.managementToken}` };
+
+  const otherCreated = await createManagementSpace(request, "Outro Espaço", "198.51.100.22");
+  expect(otherCreated.status()).toBe(201);
+  const other = await otherCreated.json() as { managementSpace: { id: string }; managementToken: string };
+
+  const wrongSpace = await request.post(`${apiBaseUrl}/api/management-spaces/${other.managementSpace.id}/management-link`, {
+    headers: oldAuthorization,
+  });
+  expect(wrongSpace.status()).toBe(401);
+  expect(await wrongSpace.text()).not.toContain(initial.managementToken);
+  const otherSpaceRead = await request.get(`${apiBaseUrl}/api/management-spaces/${other.managementSpace.id}`, {
+    headers: { Origin: webOrigin, Authorization: `Bearer ${other.managementToken}` },
+  });
+  expect(otherSpaceRead.status()).toBe(200);
+
+  const attempts = await Promise.all([
+    request.post(replaceURL, { headers: oldAuthorization }),
+    request.post(replaceURL, { headers: oldAuthorization }),
+  ]);
+  expect(attempts.map((response) => response.status()).sort()).toEqual([200, 401]);
+  const winningResponse = attempts.find((response) => response.status() === 200);
+  expect(winningResponse).toBeDefined();
+  const replacement = await winningResponse!.json() as { managementToken: string };
+  expect(replacement.managementToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(replacement.managementToken).not.toBe(initial.managementToken);
+  expect((await attempts.find((response) => response.status() === 401)!.text())).not.toContain(initial.managementToken);
+
+  const staleRead = await request.get(spaceURL, { headers: oldAuthorization });
+  expect(staleRead.status()).toBe(401);
+  const staleWrite = await request.patch(`${spaceURL}/schedules/${initial.schedule.id}`, {
+    headers: { ...oldAuthorization, "Content-Type": "application/json" },
+    data: { name: "Edição antiga" },
+  });
+  expect(staleWrite.status()).toBe(401);
+
+  const currentAuthorization = { Origin: webOrigin, Authorization: `Bearer ${replacement.managementToken}` };
+  const currentRead = await request.get(spaceURL, { headers: currentAuthorization });
+  expect(currentRead.status()).toBe(200);
+  const currentSpace = await currentRead.json() as { managementSpace: { id: string }; schedules: Array<{ id: string; name: string }> };
+  expect(currentSpace.managementSpace.id).toBe(initial.managementSpace.id);
+  expect(currentSpace.schedules).toEqual([{ id: initial.schedule.id, name: initial.schedule.name, managementSpace: { id: initial.managementSpace.id, name: "Espaço com link substituível" } }]);
+});
+
+test("the browser shows the replacement link and old and new links resolve correctly", async ({ page, context, request }) => {
+  const created = await createManagementSpace(request, "Espaço de teste do link", "198.51.100.21");
+  expect(created.status()).toBe(201);
+  const initial = await created.json() as {
+    managementSpace: { id: string };
+    schedule: { name: string };
+    managementToken: string;
+  };
+  const oldLink = `${webOrigin}/#${new URLSearchParams({
+    management_space: initial.managementSpace.id,
+    management_token: initial.managementToken,
+  }).toString()}`;
+
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto(oldLink);
+  await expect(page.getByRole("heading", { name: initial.schedule.name, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Substituir link de gestão" }).click();
+  await expect(page.getByRole("status")).toContainText("o link anterior foi invalidado");
+
+  const newLink = await page.getByRole("textbox", { name: "Link privado de gestão" }).inputValue();
+  const replacementToken = new URLSearchParams(new URL(newLink).hash.slice(1)).get("management_token");
+  expect(replacementToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(replacementToken).not.toBe(initial.managementToken);
+
+  const oldLinkPage = await context.newPage();
+  await oldLinkPage.goto(oldLink);
+  await expect(oldLinkPage.getByRole("alert")).toContainText("Este link de gestão não pode ser validado");
+  await expect(oldLinkPage.getByRole("heading", { name: "Link de gestão indisponível", exact: true })).toBeVisible();
+
+  const newLinkPage = await context.newPage();
+  await newLinkPage.goto(newLink);
+  await expect(newLinkPage.getByRole("heading", { name: initial.schedule.name, exact: true })).toBeVisible();
+  await expect(newLinkPage.locator(".space-name")).toHaveText("Espaço de teste do link");
 });
 
 test("the browser reports challenge rejection without exposing the token", async ({ page }) => {

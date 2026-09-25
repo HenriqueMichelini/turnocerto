@@ -33,7 +33,11 @@ VALUES (?, ?, ?)`
 
 const renameManagementSpaceQuery = `UPDATE management_spaces
 SET name = ?
-WHERE id = ?`
+WHERE id = ? AND management_token_hash = ?`
+
+const replaceManagementTokenQuery = `UPDATE management_spaces
+SET management_token_hash = ?
+WHERE id = ? AND management_token_hash = ?`
 
 const getManagementSpaceNameQuery = `SELECT id, name
 FROM management_spaces
@@ -50,7 +54,11 @@ ORDER BY schedules.rowid`
 
 const renameManagementScheduleQuery = `UPDATE schedules
 SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ? AND management_space_id = ?`
+WHERE id = ? AND management_space_id = ?
+  AND EXISTS (
+    SELECT 1 FROM management_spaces
+    WHERE id = ? AND management_token_hash = ?
+  )`
 
 const getManagementScheduleQuery = `SELECT schedules.id, schedules.name,
        management_spaces.id AS managementSpaceId,
@@ -250,8 +258,24 @@ func (store d1Store) GetManagementSpace(_ context.Context, id, tokenHash string)
 	return view, nil
 }
 
-func (store d1Store) RenameManagementSpace(_ context.Context, id, name string) (schedule.ManagementSpace, error) {
-	if err := store.runPreparedUpdate(renameManagementSpaceQuery, name, id); err != nil {
+func (store d1Store) ReplaceManagementToken(_ context.Context, id, currentTokenHash, nextTokenHash string) (bool, error) {
+	changes, err := store.runPreparedChanges(replaceManagementTokenQuery, nextTokenHash, id, currentTokenHash)
+	if err != nil {
+		return false, err
+	}
+	if changes > 1 {
+		return false, errors.New("credential replacement updated more than one Management Space")
+	}
+	return changes == 1, nil
+}
+
+func (store d1Store) RenameManagementSpace(ctx context.Context, id, tokenHash, name string) (schedule.ManagementSpace, error) {
+	if err := store.runPreparedUpdate(renameManagementSpaceQuery, name, id, tokenHash); err != nil {
+		if errors.Is(err, schedule.ErrNotFound) {
+			if _, authorizationErr := store.GetManagementSpace(ctx, id, tokenHash); authorizationErr != nil {
+				return schedule.ManagementSpace{}, schedule.ErrUnauthorized
+			}
+		}
 		return schedule.ManagementSpace{}, err
 	}
 	row, err := store.firstPreparedRow(getManagementSpaceNameQuery, id)
@@ -264,8 +288,13 @@ func (store d1Store) RenameManagementSpace(_ context.Context, id, name string) (
 	return schedule.ManagementSpace{ID: row.Get("id").String(), Name: row.Get("name").String()}, nil
 }
 
-func (store d1Store) RenameManagementSchedule(ctx context.Context, spaceID, scheduleID, name string) (schedule.Schedule, error) {
-	if err := store.runPreparedUpdate(renameManagementScheduleQuery, name, scheduleID, spaceID); err != nil {
+func (store d1Store) RenameManagementSchedule(ctx context.Context, spaceID, scheduleID, tokenHash, name string) (schedule.Schedule, error) {
+	if err := store.runPreparedUpdate(renameManagementScheduleQuery, name, scheduleID, spaceID, spaceID, tokenHash); err != nil {
+		if errors.Is(err, schedule.ErrNotFound) {
+			if _, authorizationErr := store.GetManagementSpace(ctx, spaceID, tokenHash); authorizationErr != nil {
+				return schedule.Schedule{}, schedule.ErrUnauthorized
+			}
+		}
 		return schedule.Schedule{}, err
 	}
 	row, err := store.firstPreparedRow(getManagementScheduleQuery, scheduleID, spaceID)
@@ -286,12 +315,7 @@ func (store d1Store) RenameManagementSchedule(ctx context.Context, spaceID, sche
 }
 
 func (store d1Store) runPreparedUpdate(query string, bindings ...any) error {
-	statement := store.database.Call("prepare", query).Call("bind", bindings...)
-	result, err := awaitPromise(statement.Call("run"))
-	if err != nil {
-		return err
-	}
-	changes, err := safeNumber(result.Get("meta").Get("changes"))
+	changes, err := store.runPreparedChanges(query, bindings...)
 	if err != nil {
 		return err
 	}
@@ -299,6 +323,19 @@ func (store d1Store) runPreparedUpdate(query string, bindings ...any) error {
 		return schedule.ErrNotFound
 	}
 	return nil
+}
+
+func (store d1Store) runPreparedChanges(query string, bindings ...any) (int, error) {
+	statement := store.database.Call("prepare", query).Call("bind", bindings...)
+	result, err := awaitPromise(statement.Call("run"))
+	if err != nil {
+		return 0, err
+	}
+	changes, err := safeNumber(result.Get("meta").Get("changes"))
+	if err != nil {
+		return 0, err
+	}
+	return changes, nil
 }
 
 func (store d1Store) firstPreparedRow(query string, bindings ...any) (js.Value, error) {

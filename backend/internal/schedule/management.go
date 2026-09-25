@@ -36,8 +36,9 @@ type ManagementSpaceView struct {
 type ManagementSpaceStore interface {
 	CreateManagementSpace(context.Context, ManagementSpace, Schedule, string) error
 	GetManagementSpace(context.Context, string, string) (ManagementSpaceView, error)
-	RenameManagementSpace(context.Context, string, string) (ManagementSpace, error)
-	RenameManagementSchedule(context.Context, string, string, string) (Schedule, error)
+	ReplaceManagementToken(context.Context, string, string, string) (bool, error)
+	RenameManagementSpace(context.Context, string, string, string) (ManagementSpace, error)
+	RenameManagementSchedule(context.Context, string, string, string, string) (Schedule, error)
 }
 
 type TurnstileVerifier interface {
@@ -206,13 +207,29 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(request.URL.Path, managementSpacesPath+"/"), "/")
-	if len(parts) != 1 && !(len(parts) == 3 && parts[1] == "schedules") {
+	replacingLink := len(parts) == 2 && parts[1] == "management-link"
+	if len(parts) != 1 && !(len(parts) == 3 && parts[1] == "schedules") && !replacingLink {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
 	spaceID := parts[0]
 	if !isUUID(spaceID) || (len(parts) == 3 && !isUUID(parts[2])) {
 		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	if replacingLink {
+		if request.Method != http.MethodPost {
+			response.Header().Set("Allow", "POST, OPTIONS")
+			writeError(response, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		token, ok := managementBearerToken(request.Header.Get("Authorization"))
+		if !ok {
+			response.Header().Set("WWW-Authenticate", "Bearer")
+			writeError(response, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		api.replaceManagementLink(response, request, spaceID, token)
 		return
 	}
 	if request.Method != http.MethodGet && !(request.Method == http.MethodPatch && (len(parts) == 1 || len(parts) == 3)) {
@@ -236,13 +253,34 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		return
 	}
 	if len(parts) == 1 {
-		api.renameManagementSpace(response, request, parts[0])
+		api.renameManagementSpace(response, request, parts[0], tokenHash(token))
 		return
 	}
-	api.renameManagementSchedule(response, request, parts[0], parts[2])
+	api.renameManagementSchedule(response, request, parts[0], parts[2], tokenHash(token))
 }
 
-func (api *handler) renameManagementSpace(response http.ResponseWriter, request *http.Request, spaceID string) {
+func (api *handler) replaceManagementLink(response http.ResponseWriter, request *http.Request, spaceID, currentToken string) {
+	nextToken, err := newManagementToken()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	replaced, err := api.managementStore.ReplaceManagementToken(request.Context(), spaceID, tokenHash(currentToken), tokenHash(nextToken))
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	if !replaced {
+		response.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		ManagementToken string `json:"managementToken"`
+	}{ManagementToken: nextToken})
+}
+
+func (api *handler) renameManagementSpace(response http.ResponseWriter, request *http.Request, spaceID, credentialHash string) {
 	var payload struct {
 		Name string `json:"name"`
 	}
@@ -255,7 +293,7 @@ func (api *handler) renameManagementSpace(response http.ResponseWriter, request 
 		writeError(response, http.StatusBadRequest, "invalid_management_space_name")
 		return
 	}
-	managementSpace, err := api.managementStore.RenameManagementSpace(request.Context(), spaceID, name)
+	managementSpace, err := api.managementStore.RenameManagementSpace(request.Context(), spaceID, credentialHash, name)
 	if err != nil {
 		writeStoreError(response, err)
 		return
@@ -265,7 +303,7 @@ func (api *handler) renameManagementSpace(response http.ResponseWriter, request 
 	}{ManagementSpace: managementSpace})
 }
 
-func (api *handler) renameManagementSchedule(response http.ResponseWriter, request *http.Request, spaceID, scheduleID string) {
+func (api *handler) renameManagementSchedule(response http.ResponseWriter, request *http.Request, spaceID, scheduleID, credentialHash string) {
 	var payload struct {
 		Name string `json:"name"`
 	}
@@ -278,7 +316,7 @@ func (api *handler) renameManagementSchedule(response http.ResponseWriter, reque
 		writeError(response, http.StatusBadRequest, "invalid_schedule_name")
 		return
 	}
-	schedule, err := api.managementStore.RenameManagementSchedule(request.Context(), spaceID, scheduleID, name)
+	schedule, err := api.managementStore.RenameManagementSchedule(request.Context(), spaceID, scheduleID, credentialHash, name)
 	if err != nil {
 		writeStoreError(response, err)
 		return

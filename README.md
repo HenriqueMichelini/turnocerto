@@ -1,19 +1,19 @@
 # TurnoCerto
 
-TurnoCerto is a Brazilian Portuguese schedule planner built with React, TypeScript, Vite, Cloudflare Pages Functions, and D1.
+TurnoCerto is a Brazilian Portuguese schedule planner. The React, TypeScript, and Vite interface is served as a static Cloudflare Pages site. Its internal API is written in Go and compiled to WebAssembly for a separate Cloudflare Worker, which uses D1 for persistence.
 
-## Local preview
+## Local development and checks
 
-Install dependencies with `npm ci`, then run `npm run preview:local`. This builds the site, applies D1 migrations to local Wrangler state, seeds a preview-only demo Schedule, and starts the Pages app at `http://127.0.0.1:8788`.
-
-The browser integration suite exercises the same Pages Function and D1 path with local state:
+Install dependencies with `npm ci`. Run the focused backend tests with `npm run test:go`, typecheck the frontend and Worker adapter with `npm run typecheck`, and run the complete local integration suite with:
 
 ```sh
 npm run test:integration
 ```
 
+The integration suite builds the Go WebAssembly module, starts a local Worker with Wrangler's local D1 database, starts the static site, and uses Playwright to open, rename, and reload a preview schedule. It also checks the production fixture guard and private response headers. It never calls Cloudflare's remote D1 API.
+
 ## Cloudflare environments
 
-The checked-in D1 IDs in `wrangler.jsonc` are local-only examples. Create separate preview and production databases, replace both IDs, and run `node scripts/check-deployment-config.mjs preview --require-real-id` before a remote operation. Remote migration and deployment commands stop while the example IDs remain.
+Create separate D1 databases and Worker environments for preview and production. The committed D1 IDs and Pages origins are examples; remote commands reject them. Configure the matching IDs and `WEB_ORIGIN` values in `wrangler.api.jsonc` before remote operations. The frontend build must receive the API Worker origin through `VITE_API_BASE_URL`.
 
-See [the preview and promotion runbook](docs/operations/cloudflare-preview.md) for migration order, rollback guidance, and the deployed smoke-check record.
+See [the Cloudflare preview runbook](docs/operations/cloudflare-preview.md) for resource setup, migration and rollback steps, deployment commands, and the deployed smoke-check record.

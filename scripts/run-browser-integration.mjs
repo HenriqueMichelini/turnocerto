@@ -1,6 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,74 +13,87 @@ if (!new Set(["preview", "production"]).has(targetEnvironment) || (grepIndex !==
 }
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const config = JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-checkDeploymentConfiguration(config, targetEnvironment);
-
-const database = config.env[targetEnvironment].d1_databases.find((binding) => binding.binding === "DB");
-const stateDirectory = resolve(repositoryRoot, `.wrangler/e2e-${targetEnvironment}-state`);
+const apiConfigPath = resolve(repositoryRoot, "wrangler.api.jsonc");
+const viteCli = resolve(repositoryRoot, "node_modules/vite/bin/vite.js");
 const wranglerCli = resolve(repositoryRoot, "node_modules/wrangler/bin/wrangler.js");
 const playwrightCli = resolve(repositoryRoot, "node_modules/@playwright/test/cli.js");
-const localArgs = ["--env", targetEnvironment, "--local", "--persist-to", stateDirectory];
-const runWrangler = (args) => execFileSync(process.execPath, [wranglerCli, ...args], { cwd: repositoryRoot, stdio: "inherit" });
+const apiUrl = "http://127.0.0.1:8787";
+const frontendUrl = "http://127.0.0.1:8788";
+const stateDirectory = resolve(repositoryRoot, `.wrangler/e2e-${targetEnvironment}-state`);
+const localArgs = ["--config", apiConfigPath, "--env", targetEnvironment, "--local", "--persist-to", stateDirectory];
+const runWrangler = (args) =>
+  execFileSync(process.execPath, [wranglerCli, ...args], { cwd: repositoryRoot, stdio: "inherit" });
 
+checkDeploymentConfiguration(JSON.parse(await readFile(apiConfigPath, "utf8")), targetEnvironment);
 await rm(stateDirectory, { recursive: true, force: true });
 runWrangler(["d1", "migrations", "apply", "DB", ...localArgs]);
 if (targetEnvironment === "preview") {
   runWrangler(["d1", "execute", "DB", ...localArgs, "--file=./db/seed-preview.sql"]);
 }
 
-const localUrl = "http://127.0.0.1:8788";
-const server = spawn(
-  process.execPath,
-  [
-    wranglerCli,
-    "pages",
-    "dev",
-    "dist",
-    "--ip",
-    "127.0.0.1",
-    "--port",
-    "8788",
-    "--persist-to",
-    stateDirectory,
-    "--d1",
-    `DB=${database.database_id}`,
-    "--binding",
-    `APP_ENV=${targetEnvironment}`,
-  ],
-  { cwd: repositoryRoot, stdio: "inherit", env: process.env },
-);
-let serverError;
-server.once("error", (error) => {
-  serverError = error;
+execFileSync(process.execPath, [resolve(repositoryRoot, "scripts/build-api.mjs")], {
+  cwd: repositoryRoot,
+  stdio: "inherit",
+});
+execFileSync("npm", ["run", "build"], {
+  cwd: repositoryRoot,
+  stdio: "inherit",
+  env: { ...process.env, VITE_API_BASE_URL: apiUrl },
 });
 
-async function waitForServer() {
+const processes = [];
+function start(args, env = process.env) {
+  const child = spawn(process.execPath, args, { cwd: repositoryRoot, stdio: "inherit", env });
+  child.once("error", (error) => {
+    child.startError = error;
+  });
+  processes.push(child);
+  return child;
+}
+
+const apiServer = start([
+  wranglerCli,
+  "dev",
+  "--config",
+  apiConfigPath,
+  "--env",
+  targetEnvironment,
+  "--ip",
+  "127.0.0.1",
+  "--port",
+  "8787",
+  "--persist-to",
+  stateDirectory,
+  "--var",
+  "WEB_ORIGIN:http://127.0.0.1:8788",
+]);
+const frontendServer = start([viteCli, "preview", "--host", "127.0.0.1", "--port", "8788", "--strictPort"]);
+
+async function waitForServer(child, url) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (serverError) throw serverError;
-    if (server.exitCode !== null || server.signalCode !== null) {
-      throw new Error(`Wrangler Pages exited with code ${server.exitCode ?? server.signalCode}.`);
+    if (child.startError) throw child.startError;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Local server exited with ${child.exitCode ?? child.signalCode}.`);
     }
     try {
-      const response = await fetch(localUrl);
-      if (response.ok) return;
+      await fetch(url);
+      return;
     } catch {
-      // Wrangler is still binding the local server.
+      await delay(200);
     }
-    await delay(200);
   }
-  throw new Error("Wrangler Pages did not become ready within 30 seconds.");
+  throw new Error(`Local server at ${url} did not become ready within 30 seconds.`);
 }
 
 async function runPlaywright() {
   const args = [playwrightCli, "test"];
   if (grep) args.push("--grep", grep);
-  const result = await new Promise((resolveResult, rejectResult) => {
+  await new Promise((resolveResult, rejectResult) => {
     const testProcess = spawn(process.execPath, args, {
       cwd: repositoryRoot,
       stdio: "inherit",
-      env: { ...process.env, TURNOCERTO_ENV: targetEnvironment },
+      env: { ...process.env, TURNOCERTO_API_BASE_URL: apiUrl, TURNOCERTO_ENV: targetEnvironment },
     });
     testProcess.once("error", rejectResult);
     testProcess.once("close", (code, signal) => {
@@ -89,18 +101,20 @@ async function runPlaywright() {
       else rejectResult(new Error(`Playwright exited with ${signal ?? `code ${code}`}.`));
     });
   });
-  return result;
 }
 
 try {
-  await waitForServer();
+  await Promise.all([waitForServer(apiServer, `${apiUrl}/api/schedules/preview-fixture`), waitForServer(frontendServer, frontendUrl)]);
   await runPlaywright();
 } finally {
-  if (server.exitCode === null && server.signalCode === null) {
-    server.kill("SIGINT");
-    await Promise.race([
-      new Promise((resolveExit) => server.once("close", resolveExit)),
-      delay(5_000).then(() => server.kill("SIGKILL")),
-    ]);
-  }
+  await Promise.all(
+    processes.map(async (child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGINT");
+      await Promise.race([
+        new Promise((resolveExit) => child.once("close", resolveExit)),
+        delay(5_000).then(() => child.kill("SIGKILL")),
+      ]);
+    }),
+  );
 }

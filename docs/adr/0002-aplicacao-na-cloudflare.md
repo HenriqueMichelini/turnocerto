@@ -1,8 +1,18 @@
 # Aplicação na Cloudflare
 
-**Estado:** parcialmente superada. Os [requisitos não funcionais](../PRODUCT.md#tecnologia-do-backend) agora exigem backend em Go; a escolha de Pages Functions para a API e a integração com o banco precisam ser reavaliadas.
+**Estado:** emendada para atender aos [requisitos de backend em Go](../PRODUCT.md#tecnologia-do-backend). A decisão anterior de implementar a API em Pages Functions está superada.
 
-Para lançar o TurnoCerto na web com operação enxuta, a interface será construída com React, TypeScript e Vite no Cloudflare Pages; a API interna do site usará Pages Functions e os dados relacionais ficarão no D1. A escolha concentra aplicação e dados em um fornecedor e facilita a implantação inicial. A alternativa de separar hospedagem, backend e banco daria mais independência, mas aumentaria a integração e a operação desde a primeira versão.
+## Decisão atual
+
+A interface React, TypeScript e Vite é um site estático no Cloudflare Pages. A API interna é um Cloudflare Worker independente, escrito em Go e compilado para WebAssembly (`js/wasm`), com acesso ao D1 por binding. O runtime Cloudflare exige um entry point compatível com Fetch e expõe o binding D1 como objeto JavaScript; por isso `worker/index.ts` é o adaptador mínimo da plataforma. Ele inicia o runtime Go dentro do primeiro `fetch` (o runtime Go usa timers e não pode iniciar no escopo global do Worker) e encaminha `Request` e bindings como objetos opacos. Rotas, validação, autorização, regras de negócio e SQL pertencem ao código Go; a ponte TypeScript não interpreta rotas nem executa consultas.
+
+O site e a API têm origens diferentes. Cada ambiente configura a origem exata do Pages em `WEB_ORIGIN`; a API em Go responde a preflight e solicitações do navegador apenas para essa origem. O frontend usa `VITE_API_BASE_URL` para apontar ao Worker daquele ambiente. Preview e produção usam Workers e bancos D1 separados. A UI continua no Pages; nenhuma regra de negócio ou acesso a dados é executado em Pages Functions.
+
+Essa divisão mantém a hospedagem estática no Pages e o backend e banco na Cloudflare. O escopo esperado de preview e produção usa um projeto Pages, dois Workers e dois bancos D1: isso fica abaixo das cotas Free atuais de 100 projetos Pages, 100 Workers e 10 bancos D1 por conta. A conta Workers Free permite 100.000 requisições por dia e 10 ms de CPU por invocação; D1 Free permite até 500 MB por banco, 5 GB por conta, 5 milhões de linhas lidas e 100.000 linhas gravadas por dia, com recuperação pontual por sete dias. O limite atual de bundle do Worker é 64 MiB sem compressão. O bundle deste recorte local ficou em 5,87 MiB sem compressão, e o fluxo Go Worker + D1 passou localmente. A medição local não comprova CPU no ambiente Cloudflare, disponibilidade, latência de celular, restauração nem capacidade para 1.000 Espaços de gestão. Cotas e custos devem ser reavaliados com carga representativa antes do lançamento. Consulte [limites do Workers](https://developers.cloudflare.com/workers/platform/limits/), [preços do Workers](https://developers.cloudflare.com/workers/platform/pricing/), [limites do Pages](https://developers.cloudflare.com/pages/platform/limits/) e [limites do D1](https://developers.cloudflare.com/d1/platform/limits/).
+
+## Discrepância com o ticket inicial
+
+O issue #1 foi escrito para Pages Functions e um binding D1 no próprio Pages. A exigência posterior em `PRODUCT.md` substitui essa parte: a função TypeScript foi removida, o Go passou a executar a API e o D1 foi ligado ao Worker independente. O fluxo de abrir, renomear e recarregar a escala permanece o critério do ticket. A prévia precisa validar a integração implantada; esta fatia não conclui a migração do backend nem autoriza promoção para produção. A validação e a migração de produção permanecem gates separados.
 
 ## Consequências
 

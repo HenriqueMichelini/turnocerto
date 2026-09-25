@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "turnocerto-api",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-24",
+  "workers_dev": true,
+  "vars": {
+    "APP_ENV": "production",
+    "WEB_ORIGIN": "https://replace-me.pages.dev"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "turnocerto-production",
+      "database_id": "00000000-0000-4000-8000-000000000001",
+      "migrations_dir": "db/migrations"
+    }
+  ],
+  "env": {
+    "production": {
+      "name": "turnocerto-api-production",
+      "vars": {
+        "APP_ENV": "production",
+        "WEB_ORIGIN": "https://replace-me.pages.dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "turnocerto-production",
+          "database_id": "00000000-0000-4000-8000-000000000001",
+          "migrations_dir": "db/migrations"
+        }
+      ]
+    },
+    "preview": {
+      "name": "turnocerto-api-preview",
+      "vars": {
+        "APP_ENV": "preview",
+        "WEB_ORIGIN": "https://replace-me.pages.dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "turnocerto-preview",
+          "database_id": "00000000-0000-4000-8000-000000000002",
+          "migrations_dir": "db/migrations"
+        }
+      ]
+    }
+  }
+}

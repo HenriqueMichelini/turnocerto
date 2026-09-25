@@ -32,18 +32,42 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
     defaultDatabase.database_id !== productionDatabase.database_id ||
     defaultDatabase.database_name !== productionDatabase.database_name
   ) {
-    throw new Error("The default Pages environment must target the production D1 database.");
+    throw new Error("The default API Worker environment must target the production D1 database.");
+  }
+  if (config.vars?.WEB_ORIGIN !== production.vars?.WEB_ORIGIN) {
+    throw new Error("The default API Worker environment must target the production Pages origin.");
   }
   if (preview.vars?.APP_ENV !== "preview" || production.vars?.APP_ENV !== "production") {
     throw new Error("APP_ENV must match each Wrangler environment.");
   }
+  for (const environment of [preview, production, config]) {
+    const webOrigin = environment.vars?.WEB_ORIGIN;
+    let parsedOrigin;
+    try {
+      parsedOrigin = new URL(webOrigin);
+    } catch {
+      throw new Error("Every API Worker environment must set WEB_ORIGIN to an HTTPS site origin.");
+    }
+    if (
+      parsedOrigin.protocol !== "https:" ||
+      parsedOrigin.pathname !== "/" ||
+      parsedOrigin.search ||
+      parsedOrigin.hash
+    ) {
+      throw new Error("Every API Worker environment must set WEB_ORIGIN to an HTTPS site origin.");
+    }
+  }
   if (config.vars?.APP_ENV !== "production") {
-    throw new Error("The default Pages environment must be marked as production.");
+    throw new Error("The default API Worker environment must be marked as production.");
   }
 
   const selectedDatabase = targetEnvironment === "preview" ? previewDatabase : productionDatabase;
   if (requireRealId && placeholderDatabaseIds.has(selectedDatabase.database_id)) {
     throw new Error(`Configure a real ${targetEnvironment} D1 database ID before a remote operation.`);
+  }
+  const selectedEnvironment = targetEnvironment === "preview" ? preview : production;
+  if (requireRealId && selectedEnvironment.vars.WEB_ORIGIN.includes("replace-me")) {
+    throw new Error(`Configure the ${targetEnvironment} Pages origin before a remote operation.`);
   }
 
   return `${targetEnvironment} is configured with an isolated D1 database.`;
@@ -52,7 +76,7 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
 function run() {
   const targetEnvironment = process.argv[2];
   const requireRealId = process.argv.includes("--require-real-id");
-  const config = JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  const config = JSON.parse(readFileSync(new URL("../wrangler.api.jsonc", import.meta.url), "utf8"));
   process.stdout.write(`${checkDeploymentConfiguration(config, targetEnvironment, requireRealId)}\n`);
 }
 

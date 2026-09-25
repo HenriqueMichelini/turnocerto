@@ -1,4 +1,9 @@
+import { existsSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
+
+const chromiumExecutable =
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
+  ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(existsSync);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -6,11 +11,9 @@ export default defineConfig({
   reporter: "list",
   workers: 1,
   use: {
-    baseURL: "http://127.0.0.1:8788",
+    baseURL: process.env.TURNOCERTO_BASE_URL ?? "http://127.0.0.1:8788",
     trace: "retain-on-failure",
     ...devices["Desktop Chrome"],
-    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
-      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
-      : {},
+    launchOptions: chromiumExecutable ? { executablePath: chromiumExecutable } : {},
   },
 });

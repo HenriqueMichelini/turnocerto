@@ -1,50 +1,63 @@
-# Cloudflare preview, migrations, and production promotion
+# Cloudflare preview, migrations, and rollback
 
-TurnoCerto serves its React/Vite build from Cloudflare Pages, routes `/api/*` through Pages Functions, and stores schedule data in D1. Preview and production must use separate D1 databases. `wrangler.jsonc` defines a `DB` binding in both environments and keeps the default Pages binding pointed at production.
+TurnoCerto uses a static Cloudflare Pages site and a separate Go WebAssembly API Worker with a D1 binding. The thin TypeScript Worker entry point exists because Cloudflare supplies Fetch requests and D1 as JavaScript runtime objects; it forwards those objects to Go. Go owns the API route, request validation, environment guard, response privacy policy, and prepared SQL statements. The frontend calls the Worker from a separate origin, restricted by the exact Pages origin configured in `WEB_ORIGIN`.
 
-The IDs checked in with this initial slice are example UUIDs for local development. They are deliberately rejected by the remote migration and deployment scripts. Never copy a production database ID into the preview environment.
+The original issue #1 described a Pages Function. The later Go requirement in `docs/PRODUCT.md` supersedes that infrastructure detail. `wrangler.jsonc` configures only the static Pages site; `wrangler.api.jsonc` configures the Go API Worker and separate D1 bindings. No API or database logic runs in Pages Functions.
 
-## Configure the Pages project
+## Free-plan resource scope
 
-1. Create a Cloudflare Pages project named `turnocerto`, connected to this repository. Use `npm ci` as the install command, `npm run build` as the build command, and `dist` as the output directory.
-2. Create two D1 databases: `turnocerto-preview` and `turnocerto-production`.
-3. Put each returned ID in its matching environment entry in `wrangler.jsonc`. Keep the IDs and names different. Verify the configuration with `node scripts/check-deployment-config.mjs preview --require-real-id` and `node scripts/check-deployment-config.mjs production --require-real-id`.
-4. Ensure the Pages preview environment is configured for branch deployments and the production environment uses the `main` branch. Deployments on the `preview` branch use `env.preview`; deployments on `main` use the default production binding.
-5. Keep `APP_ENV` set to `preview` for preview deployments and `production` for production. The demo endpoint returns `404` outside preview and does not query D1 there.
+The expected preview and production setup is one Pages project, two API Workers, and two D1 databases. Current Cloudflare Free limits allow 100 Pages projects, 100 Workers, and 10 D1 databases per account. Workers Free allows 100,000 requests per day and 10 ms CPU per invocation. D1 Free allows 500 MB per database, 5 GB per account, 5 million rows read and 100,000 rows written per day, with seven-day point-in-time recovery. The built Worker bundle for this change is 5.87 MiB uncompressed against the current 64 MiB Worker limit. Local execution is not proof of deployed CPU usage, availability, backup recovery, cellular performance, or capacity for 1,000 management spaces; measure those separately before public launch.
 
-For a manual deployment, use `npm run deploy:preview` or `npm run deploy:production`. These commands build before calling `wrangler pages deploy`; the selected branch determines the Pages environment. Normal pull request deployments can use the Pages Git integration.
+The account-wide quotas may be shared with other Workers and D1 databases. Check current usage before deploying or testing at scale. See Cloudflare's [Pages limits](https://developers.cloudflare.com/pages/platform/limits/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), and [D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
+
+## Provision the isolated environments
+
+Use the `turnocerto` project and resource names below. Do not select or modify another Pages project. The identifiers are not credentials; do not put `CLOUDFLARE_API_TOKEN` or any other secret in this repository.
+
+1. Confirm Wrangler is authenticated to the intended Cloudflare account with `npx wrangler whoami`.
+2. Create the Pages project with `npx wrangler pages project create turnocerto --production-branch main`.
+3. Create the two isolated D1 databases with `npx wrangler d1 create turnocerto-preview` and `npx wrangler d1 create turnocerto-production`. Record each returned database ID.
+4. In `wrangler.api.jsonc`, replace the preview database ID in both the top-level preview binding and `env.preview.d1_databases`. Replace the production ID in both the top-level and `env.production` bindings. Keep the database names and IDs distinct. Set the preview `WEB_ORIGIN` to `https://preview.turnocerto.pages.dev`; set the production and top-level production origin to `https://turnocerto.pages.dev`.
+5. Verify the selected environments with `node scripts/check-deployment-config.mjs preview --require-real-id` and `node scripts/check-deployment-config.mjs production --require-real-id`.
+
+Creating the production D1 database establishes isolation but this ticket does not apply a production migration or deploy production. Production changes require their own reviewed promotion. Never point preview at production.
 
 ## Local development and integration tests
 
-Run `npm run preview:local` to build the UI, apply migrations and seed the demo in local Wrangler state, then start the Pages Function server. It binds the example preview database ID to **local** D1 and sets `APP_ENV=preview`; it does not connect to Cloudflare.
+Install dependencies with `npm ci`. `npm run test:go` runs Go unit tests. `npm run typecheck` checks the frontend and Worker bridge. `npm run test:integration` builds Go to WebAssembly, runs Go unit and configuration tests, then starts a local Wrangler Worker/D1 and Vite site for Playwright. The preview case opens, renames, reloads, and restores its seeded schedule. The production case checks that the preview fixture is unavailable. These local commands use Wrangler's local state and do not contact remote D1.
 
-`npm run test:integration` runs the typechecked build, configuration safety tests, and Playwright against local Wrangler Pages + D1. It runs preview and production modes sequentially with separate local D1 state. The preview fixture seed is applied only in preview mode.
+The Go Wasm runtime starts inside the request handler because its event loop uses timers, which cannot be initialized in Workers global scope. `worker/index.ts` passes the platform `Request` and environment bindings to Go; it does not implement application behavior.
 
-## Migration workflow
+## Preview migration and deployment
 
-Migrations live in `db/migrations/` and are applied by Wrangler's D1 migration tracker. Each environment has its own D1 migration history.
+Once the preview resources are configured:
 
-1. Add a numbered SQL migration and run `npm run test:integration`.
-2. Apply it to the preview D1 with `npm run db:preview`. Verify the remote migration list with `npx wrangler d1 migrations list DB --env preview --remote` and complete the deployed smoke check below.
-3. After preview passes, apply the migration to production with `npm run db:production`, then deploy the reviewed production build with `npm run deploy:production`.
+1. Apply the schema and preview-only demo data with `npm run db:preview`. This writes only to `turnocerto-preview`.
+2. Deploy the API with `npm run deploy:api:preview`. Copy the `workers.dev` origin Wrangler reports for `turnocerto-api-preview`.
+3. Confirm preview `WEB_ORIGIN` matches `https://preview.turnocerto.pages.dev`, then deploy Pages with the API URL in the frontend build:
 
-Keep changes compatible with both the currently deployed build and the incoming build. Prefer additive changes first: add nullable columns or new tables, deploy code that can use the new shape, backfill separately if needed, and remove obsolete columns only in a later release after no deployed code depends on them. Avoid renaming or dropping columns in the same release that changes application code to stop using them.
+   ```sh
+   VITE_API_BASE_URL=https://turnocerto-api-preview.<account-subdomain>.workers.dev npm run deploy:pages:preview
+   ```
 
-### Rollback
+   Replace the example host with the origin Wrangler reported. The command rejects placeholder D1 IDs, placeholder site origins, and missing or non-HTTPS API origins.
+4. Run the deployed browser smoke test against the Pages preview and API Worker:
 
-- If a Pages release fails, roll back to the previous successful Pages deployment in the Cloudflare dashboard. Keep the D1 schema compatible with that prior build.
-- Prefer a forward fix for a bad migration. D1 migrations are not automatically undone by a Pages deployment rollback.
-- If data recovery is necessary, restore a point-in-time copy into an isolated D1 database first. Verify the restored data and application against preview before any production recovery. Do not point preview at production during recovery.
-- For a destructive migration, capture the available D1 recovery point before proceeding and rehearse the restore against an isolated database. The initial migration in this ticket only creates tables and an index, so the Pages deployment can be rolled back without reversing it.
+   ```sh
+   TURNOCERTO_BASE_URL=https://preview.turnocerto.pages.dev \
+   TURNOCERTO_API_BASE_URL=https://turnocerto-api-preview.<account-subdomain>.workers.dev \
+   TURNOCERTO_ENV=preview npx playwright test
+   ```
 
-## Deployed preview smoke check
+   Use the exact API origin Wrangler reported. The browser flow reads the seeded schedule, saves a unique temporary name, reloads and verifies persistence, then restores the original name. The API checks verify `Cache-Control: private, no-store`, `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer`, and the exact allowed CORS origin.
+5. Record the Pages deployment ID, preview URL, date, operator, and smoke result in [preview-smoke.md](preview-smoke.md). Do not record schedule contents or credentials.
 
-Deploy a non-`main` branch after configuring the real preview D1 ID and applying preview migrations. Use a browser against the resulting Pages preview URL:
+## Migration and rollback
 
-1. Open the demo and confirm `Espaço de demonstração` and `Escala de demonstração` load.
-2. Rename the Schedule to a temporary value, save it, and reload the page. Confirm the new name remains.
-3. In the browser Network panel, confirm the same-origin `GET` and `PATCH /api/schedules/preview-fixture` requests return `200`; the responses include `Cache-Control: private, no-store`, `X-Robots-Tag: noindex`, and `Referrer-Policy: no-referrer`.
-4. Open the matching production preview URL or run the production smoke command. Confirm the demo endpoint returns `404`.
-5. Record the deployment ID, date, URL, result, and operator in `docs/operations/preview-smoke.md`. Do not record private schedule values or credentials.
+Each D1 environment has its own Wrangler migration history. Add a numbered SQL migration, run the local integration suite, apply it to preview with `npm run db:preview`, and complete the deployed preview smoke before proposing production migration. `npm run db:production` is intentionally a separate command. Keep schema changes additive while old and new Worker versions may both run. The initial migration only creates tables and an index.
 
-The smoke check is intentionally not marked complete from a local run. It needs a Pages project and real D1 IDs configured in the Cloudflare account.
+Rolling back an API Worker does not reverse D1 schema changes. For an application regression, roll back the preview Worker to a known-good version with `npx wrangler rollback --config wrangler.api.jsonc --name turnocerto-api-preview --env preview` and deploy the previous Pages build from the dashboard; preserve schema compatibility with that code. Prefer a forward migration for schema mistakes. For data recovery, restore a D1 point-in-time copy into an isolated database, verify it there, and only then plan a recovery. Do not restore over the source database or attach a restored preview database to production.
+
+## Deployed preview smoke status
+
+The local integration suite is separate from a deployed smoke. Track the actual remote result in [preview-smoke.md](preview-smoke.md); a local pass must never be reported as a deployed pass. Production migration and deployment remain outside this ticket's preview deployment.

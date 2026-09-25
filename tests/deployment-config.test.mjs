@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { checkDeploymentConfiguration } from "../scripts/check-deployment-config.mjs";
 
-const config = JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+const config = JSON.parse(readFileSync(new URL("../wrangler.api.jsonc", import.meta.url), "utf8"));
 
-describe("D1 environment safety", () => {
+describe("Go API Worker D1 environment safety", () => {
   it("keeps preview and production on isolated databases", () => {
     assert.match(checkDeploymentConfiguration(config, "preview"), /isolated D1/);
     assert.match(checkDeploymentConfiguration(config, "production"), /isolated D1/);
@@ -21,13 +21,23 @@ describe("D1 environment safety", () => {
     );
   });
 
-  it("rejects a default Pages environment marked as preview", () => {
+  it("rejects a default API Worker environment marked as preview", () => {
     const unsafeConfig = structuredClone(config);
     unsafeConfig.vars.APP_ENV = "preview";
 
     assert.throws(
       () => checkDeploymentConfiguration(unsafeConfig, "preview"),
-      /default Pages environment must be marked as production/,
+      /default API Worker environment must be marked as production/,
+    );
+  });
+
+  it("keeps the default API Worker on the production site origin", () => {
+    const unsafeConfig = structuredClone(config);
+    unsafeConfig.vars.WEB_ORIGIN = "https://preview.turnocerto.pages.dev";
+
+    assert.throws(
+      () => checkDeploymentConfiguration(unsafeConfig, "preview"),
+      /default API Worker environment must target the production Pages origin/,
     );
   });
 
@@ -39,6 +49,16 @@ describe("D1 environment safety", () => {
     assert.throws(
       () => checkDeploymentConfiguration(config, "production", true),
       /Configure a real production D1 database ID/,
+    );
+  });
+
+  it("requires HTTPS site origins for the browser API", () => {
+    const unsafeConfig = structuredClone(config);
+    unsafeConfig.env.preview.vars.WEB_ORIGIN = "http://preview.turnocerto.pages.dev";
+
+    assert.throws(
+      () => checkDeploymentConfiguration(unsafeConfig, "preview"),
+      /WEB_ORIGIN to an HTTPS site origin/,
     );
   });
 });

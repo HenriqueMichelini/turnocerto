@@ -14,7 +14,8 @@ interface ScheduleResponse {
   schedule: Schedule;
 }
 
-const scheduleUrl = "/api/schedules/preview-fixture";
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
+const scheduleUrl = `${apiBaseUrl}/api/schedules/preview-fixture`;
 
 export function App() {
   const [schedule, setSchedule] = useState<Schedule | null>(null);

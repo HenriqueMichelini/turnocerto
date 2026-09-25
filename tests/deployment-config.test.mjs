@@ -42,12 +42,19 @@ describe("Go API Worker D1 environment safety", () => {
   });
 
   it("blocks remote operations while example IDs remain", () => {
+    const exampleConfig = structuredClone(config);
+    const productionDatabaseId = "00000000-0000-4000-8000-000000000001";
+    const previewDatabaseId = "00000000-0000-4000-8000-000000000002";
+    exampleConfig.d1_databases[0].database_id = productionDatabaseId;
+    exampleConfig.env.production.d1_databases[0].database_id = productionDatabaseId;
+    exampleConfig.env.preview.d1_databases[0].database_id = previewDatabaseId;
+
     assert.throws(
-      () => checkDeploymentConfiguration(config, "preview", true),
+      () => checkDeploymentConfiguration(exampleConfig, "preview", true),
       /Configure a real preview D1 database ID/,
     );
     assert.throws(
-      () => checkDeploymentConfiguration(config, "production", true),
+      () => checkDeploymentConfiguration(exampleConfig, "production", true),
       /Configure a real production D1 database ID/,
     );
   });

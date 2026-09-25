@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
@@ -11,6 +12,8 @@ const grep = grepIndex === -1 ? undefined : process.argv[grepIndex + 1];
 if (!new Set(["preview", "production"]).has(targetEnvironment) || (grepIndex !== -1 && !grep)) {
   throw new Error('Usage: node scripts/run-browser-integration.mjs <preview|production> [--grep "test name"]');
 }
+const previewToken = targetEnvironment === "preview" ? randomBytes(32).toString("base64url") : "";
+const previewTokenHash = previewToken ? createHash("sha256").update(previewToken).digest("hex") : "";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const apiConfigPath = resolve(repositoryRoot, "wrangler.api.jsonc");
@@ -66,6 +69,7 @@ const apiServer = start([
   stateDirectory,
   "--var",
   "WEB_ORIGIN:http://127.0.0.1:8788",
+  ...(previewTokenHash ? ["--var", `PREVIEW_TOKEN_HASH:${previewTokenHash}`] : []),
 ]);
 const frontendServer = start([viteCli, "preview", "--host", "127.0.0.1", "--port", "8788", "--strictPort"]);
 
@@ -93,7 +97,13 @@ async function runPlaywright() {
     const testProcess = spawn(process.execPath, args, {
       cwd: repositoryRoot,
       stdio: "inherit",
-      env: { ...process.env, TURNOCERTO_API_BASE_URL: apiUrl, TURNOCERTO_ENV: targetEnvironment },
+      env: {
+        ...process.env,
+        TURNOCERTO_API_BASE_URL: apiUrl,
+        TURNOCERTO_ENV: targetEnvironment,
+        TURNOCERTO_PREVIEW_TOKEN: previewToken,
+        TURNOCERTO_PREVIEW_LINK_FRAGMENT: targetEnvironment === "preview" ? "true" : "false",
+      },
     });
     testProcess.once("error", rejectResult);
     testProcess.once("close", (code, signal) => {

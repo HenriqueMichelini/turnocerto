@@ -3,6 +3,9 @@ package schedule
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -37,13 +40,15 @@ type Store interface {
 }
 
 type handler struct {
-	store     Store
-	appEnv    string
-	webOrigin string
+	store            Store
+	appEnv           string
+	webOrigin        string
+	previewTokenHash []byte
 }
 
-func NewHTTPHandler(store Store, appEnv, webOrigin string) http.Handler {
-	return &handler{store: store, appEnv: appEnv, webOrigin: webOrigin}
+func NewHTTPHandler(store Store, appEnv, webOrigin, previewTokenHashHex string) http.Handler {
+	previewTokenHash, _ := hex.DecodeString(previewTokenHashHex)
+	return &handler{store: store, appEnv: appEnv, webOrigin: webOrigin, previewTokenHash: previewTokenHash}
 }
 
 func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -68,6 +73,15 @@ func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
+	if len(api.previewTokenHash) != sha256.Size {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	if !api.authorized(request.Header.Get("Authorization")) {
+		response.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 
 	switch request.Method {
 	case http.MethodGet:
@@ -78,6 +92,21 @@ func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		response.Header().Set("Allow", "GET, PATCH, OPTIONS")
 		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func (api *handler) authorized(authorization string) bool {
+	if len(authorization) > 256 {
+		return false
+	}
+	parts := strings.Fields(authorization)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	if len(parts[1]) < 32 || len(parts[1]) > 128 {
+		return false
+	}
+	digest := sha256.Sum256([]byte(parts[1]))
+	return subtle.ConstantTimeCompare(digest[:], api.previewTokenHash) == 1
 }
 
 func (api *handler) get(response http.ResponseWriter, request *http.Request) {

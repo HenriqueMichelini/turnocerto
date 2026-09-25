@@ -12,7 +12,7 @@ export default defineConfig({
   workers: 1,
   use: {
     baseURL: process.env.TURNOCERTO_BASE_URL ?? "http://127.0.0.1:8788",
-    trace: "retain-on-failure",
+    trace: process.env.TURNOCERTO_PREVIEW_TOKEN ? "off" : "retain-on-failure",
     ...devices["Desktop Chrome"],
     launchOptions: chromiumExecutable ? { executablePath: chromiumExecutable } : {},
   },

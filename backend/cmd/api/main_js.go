@@ -124,7 +124,8 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	store := d1Store{database: env.Get("DB")}
 	appEnv := env.Get("APP_ENV").String()
 	webOrigin := env.Get("WEB_ORIGIN").String()
-	handler := schedule.NewHTTPHandler(store, appEnv, webOrigin)
+	previewTokenHash := env.Get("PREVIEW_TOKEN_HASH").String()
+	handler := schedule.NewHTTPHandler(store, appEnv, webOrigin, previewTokenHash)
 	responseRecorder := &workerResponse{header: make(http.Header)}
 	handler.ServeHTTP(responseRecorder, request)
 	status := responseRecorder.status

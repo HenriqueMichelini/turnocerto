@@ -14,8 +14,40 @@ interface ScheduleResponse {
   schedule: Schedule;
 }
 
+const previewTokenStorageKey = "turnocerto-preview-token";
+
+function readPreviewToken(): string {
+  const tokenFromFragment = new URLSearchParams(window.location.hash.slice(1)).get("preview_token");
+  if (tokenFromFragment) {
+    try {
+      window.sessionStorage.setItem(previewTokenStorageKey, tokenFromFragment);
+    } catch {
+      // Keep the current page usable when browser storage is unavailable.
+    }
+    try {
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    } catch {
+      // The fragment is never sent with the initial request; keeping it is only a browser fallback.
+    }
+    return tokenFromFragment;
+  }
+
+  try {
+    return window.sessionStorage.getItem(previewTokenStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const scheduleUrl = `${apiBaseUrl}/api/schedules/preview-fixture`;
+const previewToken = readPreviewToken();
+
+function requestHeaders(headers: HeadersInit): Headers {
+  const result = new Headers(headers);
+  if (previewToken) result.set("Authorization", `Bearer ${previewToken}`);
+  return result;
+}
 
 export function App() {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
@@ -29,7 +61,11 @@ export function App() {
     setIsLoading(true);
     setError("");
     try {
-      const response = await fetch(scheduleUrl, { headers: { Accept: "application/json" } });
+      const response = await fetch(scheduleUrl, { headers: requestHeaders({ Accept: "application/json" }) });
+      if (response.status === 401) {
+        setError("Abra o link de convite recebido para acessar esta prévia.");
+        return;
+      }
       if (!response.ok) throw new Error("Não foi possível abrir esta escala.");
       const result = (await response.json()) as ScheduleResponse;
       setSchedule(result.schedule);
@@ -55,7 +91,7 @@ export function App() {
     try {
       const response = await fetch(scheduleUrl, {
         method: "PATCH",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        headers: requestHeaders({ Accept: "application/json", "Content-Type": "application/json" }),
         body: JSON.stringify({ name }),
       });
       if (!response.ok) {
@@ -84,7 +120,7 @@ export function App() {
           <span className="brand-mark" aria-hidden="true">T</span>
           <span>TurnoCerto</span>
         </a>
-        <span className="preview-label">Prévia privada</span>
+        <span className="preview-label">Acesso por convite</span>
       </header>
 
       <section className="workspace" aria-labelledby="page-title">

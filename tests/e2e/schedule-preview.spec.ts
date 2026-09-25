@@ -1,11 +1,28 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const apiBaseUrl = process.env.TURNOCERTO_API_BASE_URL ?? "http://127.0.0.1:8787";
 const webOrigin = new URL(process.env.TURNOCERTO_BASE_URL ?? "http://127.0.0.1:8788").origin;
 const scheduleApiUrl = `${apiBaseUrl}/api/schedules/preview-fixture`;
+const previewToken = process.env.TURNOCERTO_PREVIEW_TOKEN ?? "";
+const useLinkFragment = previewToken !== "" && process.env.TURNOCERTO_PREVIEW_LINK_FRAGMENT === "true";
+const authorizationHeaders = previewToken ? { Authorization: `Bearer ${previewToken}` } : {};
+
+async function openPreview(page: Page) {
+  if (previewToken && !useLinkFragment) {
+    await page.addInitScript(({ key, token }) => sessionStorage.setItem(key, token), {
+      key: "turnocerto-preview-token",
+      token: previewToken,
+    });
+  }
+  const path = useLinkFragment ? `/#preview_token=${encodeURIComponent(previewToken)}` : "/";
+  await page.goto(path);
+  if (useLinkFragment) {
+    await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("");
+  }
+}
 
 test("a teammate can rename the preview schedule and see the saved name after reload", async ({ page }) => {
-  await page.goto("/");
+  await openPreview(page);
 
   const title = page.getByRole("heading", { level: 1 });
   await expect(title).toBeVisible();
@@ -29,7 +46,7 @@ test("a teammate can rename the preview schedule and see the saved name after re
 });
 
 test("schedule responses are private and excluded from shared caches and search indexes", async ({ request }) => {
-  const response = await request.get(scheduleApiUrl, { headers: { Origin: webOrigin } });
+  const response = await request.get(scheduleApiUrl, { headers: { Origin: webOrigin, ...authorizationHeaders } });
 
   expect(response.ok()).toBeTruthy();
   expect(response.headers()["cache-control"]).toContain("no-store");
@@ -47,8 +64,21 @@ test("the API rejects a request from an unconfigured web origin", async ({ reque
   expect(response.headers()["access-control-allow-origin"]).toBeUndefined();
 });
 
+test("the preview fixture rejects missing and incorrect bearer tokens", async ({ request }) => {
+  test.skip(process.env.TURNOCERTO_ENV === "production", "The preview fixture is disabled in production.");
+
+  const missing = await request.get(scheduleApiUrl, { headers: { Origin: webOrigin } });
+  expect(missing.status()).toBe(401);
+
+  const incorrect = await request.get(scheduleApiUrl, {
+    headers: { Origin: webOrigin, Authorization: "Bearer incorrect-token" },
+  });
+  expect(incorrect.status()).toBe(401);
+  expect(await incorrect.text()).not.toContain("incorrect-token");
+});
+
 test("the preview fixture is available only in the preview environment", async ({ request }) => {
-  const response = await request.get(scheduleApiUrl, { headers: { Origin: webOrigin } });
+  const response = await request.get(scheduleApiUrl, { headers: { Origin: webOrigin, ...authorizationHeaders } });
 
   if (process.env.TURNOCERTO_ENV === "production") {
     expect(response.status()).toBe(404);
@@ -61,7 +91,7 @@ test("the preview fixture is available only in the preview environment", async (
 
 test("the rename form stays usable at a phone viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await openPreview(page);
 
   const name = page.getByRole("textbox", { name: "Nome da escala" });
   const saveButton = page.getByRole("button", { name: "Salvar nome" });

@@ -9,6 +9,7 @@ Status: **pending deployed preview**. The local Go unit, Wrangler Worker/D1, and
 | API Worker URL | Pending |
 | Smoke-check date and operator | Pending |
 | Open, rename, reload persistence | Not verified in a deployed preview |
+| Missing and incorrect invitation tokens rejected | Not verified in a deployed preview |
 | Private response and exact-origin CORS headers | Not verified in a deployed preview |
 | Preview and production D1 isolation | Configured separately; remote resources not verified |
 | Production migration or deployment | Not run |

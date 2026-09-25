@@ -1,8 +1,10 @@
 # Cloudflare preview, migrations, and rollback
 
-TurnoCerto uses a static Cloudflare Pages site and a separate Go WebAssembly API Worker with a D1 binding. The thin TypeScript Worker entry point exists because Cloudflare supplies Fetch requests and D1 as JavaScript runtime objects; it forwards those objects to Go. Go owns the API route, request validation, environment guard, response privacy policy, and prepared SQL statements. The frontend calls the Worker from a separate origin, restricted by the exact Pages origin configured in `WEB_ORIGIN`.
+TurnoCerto uses a static Cloudflare Pages site and a separate Go WebAssembly API Worker with a D1 binding. The thin TypeScript Worker entry point exists because Cloudflare supplies Fetch requests and D1 as JavaScript runtime objects; it forwards those objects to Go. Go owns the API route, bearer-token authorization, request validation, environment guard, response privacy policy, and prepared SQL statements. The frontend calls the Worker from a separate origin, restricted by the exact Pages origin configured in `WEB_ORIGIN`; CORS is not authentication.
 
 The original issue #1 described a Pages Function. The later Go requirement in `docs/PRODUCT.md` supersedes that infrastructure detail. `wrangler.jsonc` configures only the static Pages site; `wrangler.api.jsonc` configures the Go API Worker and separate D1 bindings. No API or database logic runs in Pages Functions.
+
+The Pages preview alias serves a public static shell. Go requires the invitation token before it reads or changes the preview schedule, and this ticket seeds synthetic demo data only. Do not place real private schedules or credentials in this fixture. The invitation URL is a bearer credential and should be shared privately.
 
 ## Free-plan resource scope
 
@@ -19,12 +21,13 @@ Use the `turnocerto` project and resource names below. Do not select or modify a
 3. Create the two isolated D1 databases with `npx wrangler d1 create turnocerto-preview` and `npx wrangler d1 create turnocerto-production`. Record each returned database ID.
 4. In `wrangler.api.jsonc`, replace the preview database ID in both the top-level preview binding and `env.preview.d1_databases`. Replace the production ID in both the top-level and `env.production` bindings. Keep the database names and IDs distinct. Set the preview `WEB_ORIGIN` to `https://preview.turnocerto.pages.dev`; set the production and top-level production origin to `https://turnocerto.pages.dev`.
 5. Verify the selected environments with `node scripts/check-deployment-config.mjs preview --require-real-id` and `node scripts/check-deployment-config.mjs production --require-real-id`.
+6. Generate a strong random preview token, compute its SHA-256 hex digest locally, and store only that digest as the `PREVIEW_TOKEN_HASH` secret on the preview Worker with `npx wrangler secret put PREVIEW_TOKEN_HASH --config wrangler.api.jsonc --env preview`. Keep the token outside the repository and logs. Invitees use `https://preview.turnocerto.pages.dev/#preview_token=<token>`; the browser stores it for the tab session, removes the fragment from the address bar, and sends it to Go as a bearer token. The API compares only the token hash. Do not create this secret on production.
 
 Creating the production D1 database establishes isolation but this ticket does not apply a production migration or deploy production. Production changes require their own reviewed promotion. Never point preview at production.
 
 ## Local development and integration tests
 
-Install dependencies with `npm ci`. `npm run test:go` runs Go unit tests. `npm run typecheck` checks the frontend and Worker bridge. `npm run test:integration` builds Go to WebAssembly, runs Go unit and configuration tests, then starts a local Wrangler Worker/D1 and Vite site for Playwright. The preview case opens, renames, reloads, and restores its seeded schedule. The production case checks that the preview fixture is unavailable. These local commands use Wrangler's local state and do not contact remote D1.
+Install dependencies with `npm ci`. `npm run test:go` runs Go unit tests. `npm run typecheck` checks the frontend and Worker bridge. `npm run test:integration` builds Go to WebAssembly, runs Go unit and configuration tests, then starts a local Wrangler Worker/D1 and Vite site for Playwright. The preview case uses an ephemeral token, opens the invitation link, renames, reloads, and restores its seeded schedule. It also confirms missing and incorrect tokens are rejected before database access. The production case checks that the preview fixture is unavailable. These local commands use Wrangler's local state and do not contact remote D1.
 
 The Go Wasm runtime starts inside the request handler because its event loop uses timers, which cannot be initialized in Workers global scope. `worker/index.ts` passes the platform `Request` and environment bindings to Go; it does not implement application behavior.
 
@@ -46,10 +49,11 @@ Once the preview resources are configured:
    ```sh
    TURNOCERTO_BASE_URL=https://preview.turnocerto.pages.dev \
    TURNOCERTO_API_BASE_URL=https://turnocerto-api-preview.<account-subdomain>.workers.dev \
-   TURNOCERTO_ENV=preview npx playwright test
+   TURNOCERTO_ENV=preview \
+   TURNOCERTO_PREVIEW_TOKEN=<token-read-securely> npx playwright test
    ```
 
-   Use the exact API origin Wrangler reported. The browser flow reads the seeded schedule, saves a unique temporary name, reloads and verifies persistence, then restores the original name. The API checks verify `Cache-Control: private, no-store`, `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer`, and the exact allowed CORS origin.
+   Use the exact API origin Wrangler reported. The smoke runner keeps the supplied token out of the browser URL and disables Playwright tracing while the token is present. The browser flow reads the seeded schedule, saves a unique temporary name, reloads and verifies persistence, then restores the original name. The API checks verify missing and incorrect tokens return 401, while authenticated responses include `Cache-Control: private, no-store`, `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer`, and the exact allowed CORS origin.
 5. Record the Pages deployment ID, preview URL, date, operator, and smoke result in [preview-smoke.md](preview-smoke.md). Do not record schedule contents or credentials.
 
 ## Migration and rollback

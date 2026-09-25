@@ -12,6 +12,7 @@ type GoRequestHandler = (request: Request, env: WorkerEnvironment) => Promise<Re
 interface WorkerEnvironment {
   APP_ENV: string;
   DB: D1Database;
+  PREVIEW_TOKEN_HASH?: string;
   WEB_ORIGIN: string;
 }
 

@@ -79,6 +79,11 @@ A escolha de acesso sem cadastro obrigatório está registrada em [ADR 0001 — 
 
 ## Requisitos não funcionais da primeira versão
 
+### Tecnologia do backend
+
+- A API interna, a autorização, as regras de negócio e o acesso aos dados devem ser implementados em Go. TypeScript permanece na interface web; a implementação atual do backend em Pages Functions deve ser substituída.
+- Antes da migração, a execução do backend Go e sua integração com o banco devem ser validadas em prévia e produção. A escolha de infraestrutura deve preservar ou revisar explicitamente as metas de disponibilidade, restauração, capacidade, privacidade e custo abaixo, inclusive as premissas sobre as cotas do Cloudflare Free.
+
 ### Confiabilidade e operação
 
 - A meta interna de disponibilidade mensal para criar, editar e consultar escalas é de 99,5%, medida continuamente. Não é uma garantia contratual: o limite do plano Cloudflare Free prevalece se as cotas forem esgotadas.

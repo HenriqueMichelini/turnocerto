@@ -1,5 +1,7 @@
 # Aplicação na Cloudflare
 
+**Estado:** parcialmente superada. Os [requisitos não funcionais](../PRODUCT.md#tecnologia-do-backend) agora exigem backend em Go; a escolha de Pages Functions para a API e a integração com o banco precisam ser reavaliadas.
+
 Para lançar o TurnoCerto na web com operação enxuta, a interface será construída com React, TypeScript e Vite no Cloudflare Pages; a API interna do site usará Pages Functions e os dados relacionais ficarão no D1. A escolha concentra aplicação e dados em um fornecedor e facilita a implantação inicial. A alternativa de separar hospedagem, backend e banco daria mais independência, mas aumentaria a integração e a operação desde a primeira versão.
 
 ## Consequências

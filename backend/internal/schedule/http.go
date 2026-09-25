@@ -28,9 +28,11 @@ type ManagementSpace struct {
 }
 
 type Schedule struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	ManagementSpace ManagementSpace `json:"managementSpace"`
+	ID              string              `json:"id"`
+	Name            string              `json:"name"`
+	TimeZone        string              `json:"timeZone"`
+	ManagementSpace ManagementSpace     `json:"managementSpace"`
+	Participations  []WeekParticipation `json:"participations,omitempty"`
 }
 
 type Store interface {
@@ -214,6 +216,10 @@ func setCorsHeaders(headers http.Header, origin string) {
 }
 
 func writeStoreError(response http.ResponseWriter, err error) {
+	if errors.Is(err, ErrInvalidScheduleWeek) {
+		writeError(response, http.StatusBadRequest, "invalid_schedule_week")
+		return
+	}
 	if errors.Is(err, ErrUnauthorized) {
 		response.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(response, http.StatusUnauthorized, "unauthorized")

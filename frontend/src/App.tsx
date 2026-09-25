@@ -1,26 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-
-interface Schedule {
-  id: string;
-  name: string;
-  managementSpace: {
-    id: string;
-    name: string;
-  };
-}
+import { ScheduleEditor } from "./ScheduleEditor";
+import type { ManagementSpace, ManagementSpaceView, Person, Schedule } from "./schedule-types";
 
 interface ScheduleResponse {
   schedule: Schedule;
 }
 
-interface ManagementSpaceView {
-  managementSpace: Schedule["managementSpace"];
-  schedules: Schedule[];
-}
-
 interface ManagementSpaceResponse {
-  managementSpace: Schedule["managementSpace"];
+  managementSpace: ManagementSpace;
   schedule: Schedule;
   managementToken: string;
 }
@@ -117,6 +105,7 @@ const managementApiUrl = `${apiBaseUrl}/api/management-spaces`;
 const turnstileSiteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? "";
 const managementCredentials = readManagementCredentials();
 const previewToken = readPreviewToken();
+const suggestedTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paulo";
 
 function requestHeaders(headers: HeadersInit): Headers {
   const result = new Headers(headers);
@@ -260,10 +249,13 @@ export function App() {
 function ManagementSpaceApp() {
   const [spaceID, setSpaceID] = useState(managementCredentials?.spaceID ?? "");
   const [managementToken, setManagementToken] = useState(managementCredentials?.token ?? "");
-  const [space, setSpace] = useState<Schedule["managementSpace"] | null>(null);
+  const [space, setSpace] = useState<ManagementSpace | null>(null);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
   const [spaceName, setSpaceName] = useState("Meu Espaço de gestão");
   const [scheduleName, setScheduleName] = useState("Minha primeira escala");
+  const [scheduleTimeZone, setScheduleTimeZone] = useState(suggestedTimeZone);
   const [challengeToken, setChallengeToken] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -289,6 +281,8 @@ function ManagementSpaceApp() {
       setManagementToken(credentials.token);
       setSpace(null);
       setSchedule(null);
+      setSchedules([]);
+      setPeople([]);
       setIsLoading(true);
       setError("");
       setManagementLoadVersion((version) => version + 1);
@@ -321,6 +315,8 @@ function ManagementSpaceApp() {
         if (!active) return;
         setSpace(result.managementSpace);
         setSchedule(result.schedules[0] ?? null);
+        setSchedules(result.schedules);
+        setPeople(result.people ?? []);
         setSpaceName(result.managementSpace.name);
         setScheduleName(result.schedules[0]?.name ?? "");
         setManagementLink(buildManagementLink(spaceID, managementToken));
@@ -393,7 +389,7 @@ function ManagementSpaceApp() {
       const response = await fetch(managementApiUrl, {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ spaceName, scheduleName, turnstileToken: challengeToken }),
+        body: JSON.stringify({ spaceName, scheduleName, timeZone: scheduleTimeZone, turnstileToken: challengeToken }),
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({})) as { error?: string };
@@ -421,6 +417,8 @@ function ManagementSpaceApp() {
       setManagementToken(result.managementToken);
       setSpace(result.managementSpace);
       setSchedule(result.schedule);
+      setSchedules([result.schedule]);
+      setPeople([]);
       setManagementLink(buildManagementLink(result.managementSpace.id, result.managementToken));
       setMessage("Espaço criado. Guarde o link de gestão para abrir e editar depois.");
     } catch {
@@ -446,6 +444,7 @@ function ManagementSpaceApp() {
         scheduleName,
       );
       setSchedule(result.schedule);
+      setSchedules((current) => current.map((calendar) => calendar.id === result.schedule.id ? result.schedule : calendar));
       setScheduleName(result.schedule.name);
       setMessage("Nome salvo.");
     } catch (error) {
@@ -538,6 +537,8 @@ function ManagementSpaceApp() {
     setManagementToken("");
     setSpace(null);
     setSchedule(null);
+    setSchedules([]);
+    setPeople([]);
     setManagementLink("");
     setIsLoading(false);
     setError("");
@@ -603,6 +604,19 @@ function ManagementSpaceApp() {
                   disabled={isCreating}
                 />
               </div>
+              <label htmlFor="first-schedule-time-zone">Fuso horário da escala</label>
+              <div className="field-stack">
+                <input
+                  id="first-schedule-time-zone"
+                  name="first-schedule-time-zone"
+                  value={scheduleTimeZone}
+                  onChange={(event) => setScheduleTimeZone(event.target.value)}
+                  maxLength={80}
+                  required
+                  disabled={isCreating}
+                />
+                <p className="form-hint">Sugestão baseada no fuso horário deste dispositivo. Exemplo: America/Sao_Paulo.</p>
+              </div>
               <div className="turnstile-slot" ref={challengeContainer} aria-label="Verificação de segurança" />
               <button className="primary-button" type="submit" disabled={isCreating || !challengeToken || !turnstileSiteKey}>
                 {isCreating ? "Criando Espaço…" : "Criar Espaço e escala"}
@@ -615,7 +629,7 @@ function ManagementSpaceApp() {
             <div className="card-heading">
               <div className="calendar-tile" aria-hidden="true">▦</div>
               <div>
-                <h2>Edite sua primeira escala</h2>
+                <h2>Edite sua escala</h2>
                 <p>O link de gestão permite abrir este Espaço novamente.</p>
               </div>
             </div>
@@ -675,6 +689,33 @@ function ManagementSpaceApp() {
             <p className="empty-state">Abra o link privado de gestão que você guardou para recuperar o acesso de edição.</p>
             <button className="primary-button" type="button" onClick={startAnotherSpace}>Criar outro Espaço de gestão</button>
           </section>
+        )}
+
+        {space && schedule && managementToken && (
+          <ScheduleEditor
+            spaceID={space.id}
+            managementToken={managementToken}
+            schedules={schedules}
+            people={people}
+            selectedSchedule={schedule}
+            onSelectSchedule={(calendar) => {
+              setSchedule(calendar);
+              setScheduleName(calendar.name);
+            }}
+            onScheduleCreated={(calendar) => {
+              const selected = { ...calendar, managementSpace: space };
+              setSchedules((current) => [...current, selected]);
+              setSchedule(selected);
+              setScheduleName(selected.name);
+            }}
+            onScheduleUpdated={(calendar) => {
+              const updated = { ...calendar, managementSpace: space };
+              setSchedules((current) => current.map((item) => item.id === updated.id ? updated : item));
+              setSchedule(updated);
+              setScheduleName(updated.name);
+            }}
+            onPersonCreated={(person) => setPeople((current) => [...current, person])}
+          />
         )}
 
         {message && <p className="notice success" role="status">{message}</p>}

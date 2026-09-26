@@ -93,6 +93,10 @@ func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Reques
 		api.managementSpaceRequest(response, request)
 		return
 	}
+	if strings.HasPrefix(request.URL.Path, readLinksPath) {
+		api.readLinkRequest(response, request)
+		return
+	}
 	if api.appEnv != "preview" || request.URL.Path != "/api/schedules/"+PreviewScheduleID {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
@@ -210,7 +214,7 @@ func setPrivateHeaders(headers http.Header) {
 
 func setCorsHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
-	headers.Set("Access-Control-Allow-Methods", "GET, PATCH, POST, OPTIONS")
+	headers.Set("Access-Control-Allow-Methods", "GET, PATCH, POST, DELETE, OPTIONS")
 	headers.Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
 	headers.Set("Access-Control-Max-Age", "600")
 	headers.Set("Vary", "Origin")

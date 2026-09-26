@@ -170,6 +170,24 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
 .week-edit-exceptions { margin: 12px 0; padding: 12px; border: 1px solid #e2eae2; border-radius: 9px; }
 .week-edit-exceptions legend { padding: 0 4px; color: #344a3e; font-size: 12px; font-weight: 700; }
 .week-edit-form .primary-button { min-height: 42px; }
+.read-links-panel > h3 { margin: 0 0 5px; }
+.read-link-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(160px, .7fr) auto; align-items: end; gap: 8px 12px; margin-top: 16px; }
+.read-link-form label { color: #44564a; font-size: 12px; font-weight: 600; }
+.read-link-form input, .read-link-form select { min-width: 0; height: 42px; padding: 0 11px; border: 1px solid #d9e3da; border-radius: 8px; background: #fff; color: #263b30; font-size: 13px; }
+.read-link-form button, .read-link-issued button { min-height: 42px; padding: 0 15px; border: 0; border-radius: 8px; color: #fff; background: #28694d; font-size: 13px; font-weight: 700; cursor: pointer; }
+.read-link-form button:disabled, .read-link-issued button:disabled { opacity: .55; cursor: not-allowed; }
+.read-link-issued { margin-top: 16px; padding: 13px; border: 1px solid #dbe9dd; border-radius: 9px; background: #f7fbf7; }
+.read-link-issued > label { display: block; margin-bottom: 7px; color: #344a3e; font-size: 12px; font-weight: 700; }
+.read-link-issued > p { margin: 8px 0 0; color: #75827a; font-size: 11px; line-height: 1.5; }
+.read-link-list { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.read-link-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid #e2eae2; border-radius: 9px; background: #fff; }
+.read-link-list li > div { display: grid; gap: 4px; }
+.read-link-list strong { color: #344a3e; font-size: 12px; }
+.read-link-list span { color: #748079; font-size: 11px; }
+.schedule-reader .person-week h3 { margin: 0 0 6px; color: #344a3e; font-size: 13px; }
+.schedule-reader .week-day { cursor: default; }
+.schedule-reader .week-controls span { color: #52645a; font-size: 12px; }
+.schedule-reader .week-controls button:disabled { opacity: .45; cursor: not-allowed; }
 .notice.error p { margin: 0; }
 .notice.error button { min-height: 36px; margin-top: 8px; padding: 0 12px; border: 1px solid #b97970; border-radius: 7px; color: #81423c; background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; }
 
@@ -185,4 +203,6 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
   .week-controls label { width: 100%; }
   .week-controls input { flex: 1; }
   .editor-form > .primary-button { width: 100%; }
+  .read-link-form { grid-template-columns: 1fr; }
+  .read-link-list li { align-items: flex-start; flex-direction: column; }
 }

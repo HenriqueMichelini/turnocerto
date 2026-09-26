@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ScheduleEditor } from "./ScheduleEditor";
+import { ReadLinkReaderApp, ReadLinksManager, readCredentialsFromFragment } from "./ReadLinks";
+import type { ReadLinkCredentials } from "./ReadLinks";
 import type { ManagementSpace, ManagementSpaceView, Person, Schedule } from "./schedule-types";
 
 interface ScheduleResponse {
@@ -46,6 +48,7 @@ declare global {
 const previewTokenStorageKey = "turnocerto-preview-token";
 const managementSpaceStorageKey = "turnocerto-management-space";
 const managementTokenStoragePrefix = "turnocerto-management-token:";
+const initialReadLinkCredentials = readCredentialsFromFragment();
 
 function readPreviewToken(): string {
   const tokenFromFragment = new URLSearchParams(window.location.hash.slice(1)).get("preview_token");
@@ -243,7 +246,26 @@ function PreviewScheduleApp() {
 }
 
 export function App() {
-  return previewToken ? <PreviewScheduleApp /> : <ManagementSpaceApp />;
+  const [readLinkCredentials, setReadLinkCredentials] = useState<ReadLinkCredentials | null>(initialReadLinkCredentials);
+
+  useEffect(() => {
+    function readLinkFromFragment() {
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      if (fragment.has("management_token")) {
+        window.location.reload();
+        return;
+      }
+      if (!fragment.has("read_link_id")) return;
+      const credentials = readCredentialsFromFragment(false);
+      if (credentials) setReadLinkCredentials(credentials);
+    }
+    window.addEventListener("hashchange", readLinkFromFragment);
+    return () => window.removeEventListener("hashchange", readLinkFromFragment);
+  }, []);
+
+  if (previewToken) return <PreviewScheduleApp />;
+  if (readLinkCredentials) return <ReadLinkReaderApp apiBaseUrl={apiBaseUrl} credentials={readLinkCredentials} />;
+  return <ManagementSpaceApp />;
 }
 
 function ManagementSpaceApp() {
@@ -716,6 +738,10 @@ function ManagementSpaceApp() {
             }}
             onPersonCreated={(person) => setPeople((current) => [...current, person])}
           />
+        )}
+
+        {space && schedule && managementToken && (
+          <ReadLinksManager key={schedule.id} apiBaseUrl={apiBaseUrl} spaceID={space.id} schedule={schedule} managementToken={managementToken} />
         )}
 
         {message && <p className="notice success" role="status">{message}</p>}

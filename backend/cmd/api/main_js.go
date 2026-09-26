@@ -77,6 +77,95 @@ INNER JOIN management_spaces ON management_spaces.id = schedules.management_spac
 INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
 WHERE schedules.id = ? AND management_spaces.id = ?`
 
+const createReadLinkQuery = `INSERT INTO read_links (id, schedule_id, start_week, week_count, token_hash)
+SELECT ?, schedules.id, ?, ?, ?
+FROM schedules
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+WHERE schedules.id = ? AND management_spaces.id = ?
+  AND management_spaces.management_token_hash = ?`
+
+const listReadLinksQuery = `SELECT read_links.id, read_links.schedule_id AS scheduleId,
+       read_links.start_week AS startWeek, read_links.week_count AS weekCount,
+       (read_links.revoked_at IS NOT NULL) AS revoked
+FROM read_links
+INNER JOIN schedules ON schedules.id = read_links.schedule_id
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+WHERE schedules.id = ? AND management_spaces.id = ?
+  AND management_spaces.management_token_hash = ?
+ORDER BY read_links.created_at DESC, read_links.id`
+
+const revokeReadLinkQuery = `UPDATE read_links
+SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND schedule_id = ? AND revoked_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM schedules
+    INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+    WHERE schedules.id = read_links.schedule_id AND management_spaces.id = ?
+      AND management_spaces.management_token_hash = ?
+  )`
+
+const readLinkAuthorizationPredicate = `read_links.id = ? AND schedules.id = ? AND read_links.token_hash = ?
+  AND read_links.revoked_at IS NULL
+  AND ? >= read_links.start_week
+  AND ? <= date(read_links.start_week, '+' || ((read_links.week_count - 1) * 7) || ' days')`
+
+const getReadLinkScheduleQuery = `SELECT schedules.id AS scheduleId, schedules.name AS scheduleName,
+       schedules.time_zone AS scheduleTimeZone,
+       schedule_revisions.revision AS revision,
+       management_spaces.id AS managementSpaceId,
+       management_spaces.name AS managementSpaceName,
+       read_links.start_week AS startWeek, read_links.week_count AS weekCount
+FROM read_links
+INNER JOIN schedules ON schedules.id = read_links.schedule_id
+INNER JOIN schedule_revisions ON schedule_revisions.schedule_id = schedules.id
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+WHERE ` + readLinkAuthorizationPredicate
+
+const getReadLinkScheduleParticipationsQuery = `SELECT participations.id AS participationId,
+       participations.person_id AS personId,
+       people.name AS personName,
+       participations.start_date AS startDate,
+       participations.end_date AS endDate,
+       weekly_patterns.id AS patternId,
+       weekly_patterns.effective_from AS effectiveFrom,
+       weekly_pattern_days.weekday AS weekday,
+       weekly_pattern_days.state AS state,
+       weekly_pattern_days.start_time AS startTime,
+       weekly_pattern_days.end_time AS endTime,
+       weekly_pattern_days.break_start_time AS breakStartTime,
+       weekly_pattern_days.break_end_time AS breakEndTime,
+       schedules.id AS scheduleId
+FROM read_links
+INNER JOIN schedules ON schedules.id = read_links.schedule_id
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN participations ON participations.schedule_id = schedules.id
+INNER JOIN people ON people.id = participations.person_id
+LEFT JOIN weekly_patterns ON weekly_patterns.participation_id = participations.id
+  AND weekly_patterns.effective_from <= date(?, '+6 days')
+LEFT JOIN weekly_pattern_days ON weekly_pattern_days.weekly_pattern_id = weekly_patterns.id
+WHERE ` + readLinkAuthorizationPredicate + `
+  AND participations.start_date <= date(?, '+6 days')
+  AND (participations.end_date IS NULL OR participations.end_date >= ?)
+ORDER BY people.name COLLATE NOCASE, participations.start_date,
+         weekly_patterns.effective_from, weekly_pattern_days.weekday`
+
+const getReadLinkDateExceptionsQuery = `SELECT participation_date_exceptions.participation_id AS participationId,
+       participation_date_exceptions.exception_date AS exceptionDate,
+       participation_date_exceptions.state AS state,
+       participation_date_exceptions.start_time AS startTime,
+       participation_date_exceptions.end_time AS endTime,
+       participation_date_exceptions.break_start_time AS breakStartTime,
+       participation_date_exceptions.break_end_time AS breakEndTime,
+       schedules.id AS scheduleId
+FROM read_links
+INNER JOIN schedules ON schedules.id = read_links.schedule_id
+INNER JOIN management_spaces ON management_spaces.id = schedules.management_space_id
+INNER JOIN participations ON participations.schedule_id = schedules.id
+INNER JOIN participation_date_exceptions ON participation_date_exceptions.participation_id = participations.id
+WHERE ` + readLinkAuthorizationPredicate + `
+  AND participation_date_exceptions.exception_date BETWEEN ? AND date(?, '+6 days')
+ORDER BY participation_date_exceptions.exception_date`
+
 const updateManagementScheduleTimeZoneQuery = `UPDATE schedules
 SET time_zone = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ? AND management_space_id = ?
@@ -455,15 +544,23 @@ func (store d1Store) GetManagementSpace(_ context.Context, id, tokenHash string)
 
 func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view *schedule.ManagementSpaceView) error {
 	peopleStatement := store.database.Call("prepare", getPeopleQuery).Call("bind", id, tokenHash)
-	peopleResult, err := awaitPromise(peopleStatement.Call("all"))
-	if err != nil {
-		return err
-	}
-	peopleRows := peopleResult.Get("results")
-	if !peopleRows.IsUndefined() && !peopleRows.IsNull() {
-		for index := 0; index < peopleRows.Length(); index++ {
-			row := peopleRows.Index(index)
-			view.People = append(view.People, schedule.Person{ID: valueString(row.Get("id")), Name: valueString(row.Get("name"))})
+	participationStatement := store.database.Call("prepare", getScheduleParticipationsQuery).Call("bind", id, tokenHash)
+	exceptionStatement := store.database.Call("prepare", getParticipationExceptionsQuery).Call("bind", id, tokenHash)
+	return store.loadScheduleData(view, peopleStatement, participationStatement, exceptionStatement)
+}
+
+func (store d1Store) loadScheduleData(view *schedule.ManagementSpaceView, peopleStatement, statement, exceptionStatement js.Value) error {
+	if !peopleStatement.IsUndefined() && !peopleStatement.IsNull() {
+		peopleResult, err := awaitPromise(peopleStatement.Call("all"))
+		if err != nil {
+			return err
+		}
+		peopleRows := peopleResult.Get("results")
+		if !peopleRows.IsUndefined() && !peopleRows.IsNull() {
+			for index := 0; index < peopleRows.Length(); index++ {
+				row := peopleRows.Index(index)
+				view.People = append(view.People, schedule.Person{ID: valueString(row.Get("id")), Name: valueString(row.Get("name"))})
+			}
 		}
 	}
 
@@ -476,7 +573,6 @@ func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view 
 		participationIndex int
 	})
 	patternIndexes := make(map[string]map[string]int)
-	statement := store.database.Call("prepare", getScheduleParticipationsQuery).Call("bind", id, tokenHash)
 	result, err := awaitPromise(statement.Call("all"))
 	if err != nil {
 		return err
@@ -554,7 +650,6 @@ func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view 
 		calendar.Participations[participationRef.participationIndex] = participation
 		view.Schedules[participationRef.scheduleIndex] = calendar
 	}
-	exceptionStatement := store.database.Call("prepare", getParticipationExceptionsQuery).Call("bind", id, tokenHash)
 	exceptionResult, err := awaitPromise(exceptionStatement.Call("all"))
 	if err != nil {
 		return err
@@ -588,6 +683,99 @@ func (store d1Store) loadManagementSpaceScheduleData(id, tokenHash string, view 
 		view.Schedules[participationRef.scheduleIndex] = calendar
 	}
 	return nil
+}
+
+func (store d1Store) CreateReadLink(_ context.Context, spaceID, scheduleID, managementHash string, link schedule.ReadLink, readTokenHash string) error {
+	changes, err := store.runPreparedChanges(createReadLinkQuery,
+		link.ID, link.StartWeek, link.WeekCount, readTokenHash, scheduleID, spaceID, managementHash)
+	if err != nil {
+		return err
+	}
+	if changes != 1 {
+		return schedule.ErrNotFound
+	}
+	return nil
+}
+
+func (store d1Store) ListReadLinks(_ context.Context, spaceID, scheduleID, managementHash string) ([]schedule.ReadLink, error) {
+	statement := store.database.Call("prepare", listReadLinksQuery).Call("bind", scheduleID, spaceID, managementHash)
+	result, err := awaitPromise(statement.Call("all"))
+	if err != nil {
+		return nil, err
+	}
+	rows := result.Get("results")
+	links := make([]schedule.ReadLink, 0)
+	if rows.IsUndefined() || rows.IsNull() {
+		return links, nil
+	}
+	for index := 0; index < rows.Length(); index++ {
+		row := rows.Index(index)
+		weekCount, err := safeNumber(row.Get("weekCount"))
+		if err != nil {
+			return nil, err
+		}
+		revoked, err := safeNumber(row.Get("revoked"))
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, schedule.ReadLink{
+			ID: valueString(row.Get("id")), ScheduleID: valueString(row.Get("scheduleId")),
+			StartWeek: valueString(row.Get("startWeek")), WeekCount: weekCount, Revoked: revoked != 0,
+		})
+	}
+	return links, nil
+}
+
+func (store d1Store) RevokeReadLink(_ context.Context, spaceID, scheduleID, linkID, managementHash string) error {
+	changes, err := store.runPreparedChanges(revokeReadLinkQuery, linkID, scheduleID, spaceID, managementHash)
+	if err != nil {
+		return err
+	}
+	if changes != 1 {
+		return schedule.ErrNotFound
+	}
+	return nil
+}
+
+func (store d1Store) GetReadLinkWeek(_ context.Context, linkID, scheduleID, readTokenHash, weekStart string) (schedule.ReadLinkTarget, error) {
+	row, err := store.firstPreparedRow(getReadLinkScheduleQuery, linkID, scheduleID, readTokenHash, weekStart, weekStart)
+	if err != nil {
+		return schedule.ReadLinkTarget{}, err
+	}
+	if row.IsNull() || row.IsUndefined() {
+		return schedule.ReadLinkTarget{}, schedule.ErrUnauthorized
+	}
+	weekCount, err := safeNumber(row.Get("weekCount"))
+	if err != nil {
+		return schedule.ReadLinkTarget{}, err
+	}
+	calendar := schedule.Schedule{
+		ID:       valueString(row.Get("scheduleId")),
+		Name:     valueString(row.Get("scheduleName")),
+		TimeZone: valueString(row.Get("scheduleTimeZone")),
+		Revision: valueString(row.Get("revision")),
+		ManagementSpace: schedule.ManagementSpace{
+			ID: valueString(row.Get("managementSpaceId")), Name: valueString(row.Get("managementSpaceName")),
+		},
+		Participations: make([]schedule.WeekParticipation, 0),
+	}
+	view := schedule.ManagementSpaceView{
+		ManagementSpace: calendar.ManagementSpace,
+		Schedules:       []schedule.Schedule{calendar},
+	}
+	participationStatement := store.database.Call("prepare", getReadLinkScheduleParticipationsQuery).Call("bind",
+		weekStart, linkID, scheduleID, readTokenHash, weekStart, weekStart, weekStart, weekStart)
+	exceptionStatement := store.database.Call("prepare", getReadLinkDateExceptionsQuery).Call("bind",
+		linkID, scheduleID, readTokenHash, weekStart, weekStart, weekStart, weekStart)
+	if err := store.loadScheduleData(&view, js.Undefined(), participationStatement, exceptionStatement); err != nil {
+		return schedule.ReadLinkTarget{}, err
+	}
+	calendar = view.Schedules[0]
+	week, err := schedule.DeriveScheduleWeek(calendar, weekStart, calendar.Participations, time.Now())
+	if err != nil {
+		return schedule.ReadLinkTarget{}, err
+	}
+	return schedule.ReadLinkTarget{Schedule: calendar, Week: week, StartWeek: valueString(row.Get("startWeek")), WeekCount: weekCount}, nil
 }
 
 func (store d1Store) CreateSchedule(ctx context.Context, spaceID, tokenHash string, newSchedule schedule.Schedule) error {

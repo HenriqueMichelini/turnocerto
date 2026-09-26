@@ -92,3 +92,43 @@ export interface ManagementSpaceView {
   schedules: Schedule[];
   people: Person[];
 }
+
+export interface ReadLink {
+  id: string;
+  scheduleId: string;
+  startWeek: string;
+  weekCount: number;
+  revoked: boolean;
+}
+
+export interface ReadLinkDay {
+  date: string;
+  weekday: number;
+  state: "outside_participation" | "undefined" | "day_off" | "work_period" | "vacation" | "absence" | "unavailable";
+  workPeriod?: WorkPeriod;
+}
+
+export interface ReadLinkPersonWeek {
+  person: Person;
+  days: ReadLinkDay[];
+}
+
+export interface ReadLinkWeek {
+  weekStart: string;
+  weekEnd: string;
+  timeZone: string;
+  people: ReadLinkPersonWeek[];
+}
+
+export interface ReadLinkSchedule {
+  id: string;
+  name: string;
+  timeZone: string;
+}
+
+export interface ReadLinkWeekResponse {
+  schedule: ReadLinkSchedule;
+  week: ReadLinkWeek;
+  startWeek: string;
+  weekCount: number;
+}

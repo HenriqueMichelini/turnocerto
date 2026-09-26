@@ -21,6 +21,7 @@ import (
 
 const (
 	managementSpacesPath      = "/api/management-spaces"
+	readLinksPath             = "/api/read-links/"
 	maximumCreationBodySize   = 8192
 	maximumTurnstileTokenSize = 2048
 	turnstileSiteverifyURL    = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
@@ -33,6 +34,53 @@ type ManagementSpaceView struct {
 	ManagementSpace ManagementSpace `json:"managementSpace"`
 	Schedules       []Schedule      `json:"schedules"`
 	People          []Person        `json:"people"`
+}
+
+type ReadLink struct {
+	ID         string `json:"id"`
+	ScheduleID string `json:"scheduleId"`
+	StartWeek  string `json:"startWeek"`
+	WeekCount  int    `json:"weekCount"`
+	Revoked    bool   `json:"revoked"`
+}
+
+type ReadLinkTarget struct {
+	Schedule  Schedule
+	Week      ScheduleWeek
+	StartWeek string
+	WeekCount int
+}
+
+type ReadLinkScheduleView struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	TimeZone string `json:"timeZone"`
+}
+
+type ReadLinkWeekView struct {
+	WeekStart string                   `json:"weekStart"`
+	WeekEnd   string                   `json:"weekEnd"`
+	TimeZone  string                   `json:"timeZone"`
+	People    []ReadLinkPersonWeekView `json:"people"`
+}
+
+type ReadLinkPersonWeekView struct {
+	Person Person            `json:"person"`
+	Days   []ReadLinkDayView `json:"days"`
+}
+
+type ReadLinkDayView struct {
+	Date       string      `json:"date"`
+	Weekday    int         `json:"weekday"`
+	State      string      `json:"state"`
+	WorkPeriod *WorkPeriod `json:"workPeriod,omitempty"`
+}
+
+type ReadLinkResponse struct {
+	Schedule  ReadLinkScheduleView `json:"schedule"`
+	Week      ReadLinkWeekView     `json:"week"`
+	StartWeek string               `json:"startWeek"`
+	WeekCount int                  `json:"weekCount"`
 }
 
 type ManagementSpaceStore interface {
@@ -49,6 +97,13 @@ type SchedulingStore interface {
 	UpdateScheduleTimeZone(context.Context, string, string, string, string) (Schedule, error)
 	CreateParticipation(context.Context, string, string, string, WeekParticipation, string, string) error
 	SaveScheduleEdit(context.Context, string, string, string, string, ScheduleEdit, string) error
+}
+
+type ReadLinkStore interface {
+	CreateReadLink(context.Context, string, string, string, ReadLink, string) error
+	ListReadLinks(context.Context, string, string, string) ([]ReadLink, error)
+	RevokeReadLink(context.Context, string, string, string, string) error
+	GetReadLinkWeek(context.Context, string, string, string, string) (ReadLinkTarget, error)
 }
 
 type TurnstileVerifier interface {
@@ -243,6 +298,10 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		route = "schedules"
 	case len(parts) == 3 && parts[1] == "schedules":
 		route = "schedule"
+	case len(parts) == 4 && parts[1] == "schedules" && parts[3] == "read-links":
+		route = "read-links"
+	case len(parts) == 5 && parts[1] == "schedules" && parts[3] == "read-links":
+		route = "read-link"
 	case len(parts) == 4 && parts[1] == "schedules" && parts[3] == "participations":
 		route = "participations"
 	case len(parts) == 6 && parts[1] == "schedules" && parts[3] == "participations" && parts[5] == "edits":
@@ -253,7 +312,7 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		return
 	}
 	spaceID := parts[0]
-	if !isUUID(spaceID) || (len(parts) >= 3 && parts[1] == "schedules" && !isUUID(parts[2])) || (route == "edits" && !isUUID(parts[4])) {
+	if !isUUID(spaceID) || (len(parts) >= 3 && parts[1] == "schedules" && !isUUID(parts[2])) || (route == "edits" && !isUUID(parts[4])) || (route == "read-link" && !isUUID(parts[4])) {
 		writeError(response, http.StatusNotFound, "not_found")
 		return
 	}
@@ -281,6 +340,12 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 	case "people", "schedules", "participations", "edits":
 		allowed = request.Method == http.MethodPost
 		allow = "POST, OPTIONS"
+	case "read-links":
+		allowed = request.Method == http.MethodGet || request.Method == http.MethodPost
+		allow = "GET, POST, OPTIONS"
+	case "read-link":
+		allowed = request.Method == http.MethodDelete
+		allow = "DELETE, OPTIONS"
 	}
 	if !allowed {
 		response.Header().Set("Allow", allow)
@@ -325,7 +390,170 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 		api.createParticipation(response, request, space, spaceID, parts[2], credentialHash)
 	case "edits":
 		api.saveScheduleEdit(response, request, space, spaceID, parts[2], parts[4], credentialHash)
+	case "read-links":
+		if request.Method == http.MethodGet {
+			api.listReadLinks(response, request, space, spaceID, parts[2], credentialHash)
+		} else {
+			api.createReadLink(response, request, space, spaceID, parts[2], credentialHash)
+		}
+	case "read-link":
+		api.revokeReadLink(response, request, space, spaceID, parts[2], parts[4], credentialHash)
 	}
+}
+
+func (api *handler) readLinkRequest(response http.ResponseWriter, request *http.Request) {
+	if !api.managementEnabled() {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	if request.Method != http.MethodGet {
+		response.Header().Set("Allow", "GET, OPTIONS")
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(request.URL.Path, readLinksPath), "/")
+	if len(parts) != 5 || parts[1] != "schedules" || parts[3] != "weeks" || !isUUID(parts[0]) || !isUUID(parts[2]) {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	weekStart := parts[4]
+	if !validReadLinkScope(weekStart, 1) {
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	token, ok := managementBearerToken(request.Header.Get("Authorization"))
+	if !ok {
+		response.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	store, ok := api.managementStore.(ReadLinkStore)
+	if !ok {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	target, err := store.GetReadLinkWeek(request.Context(), parts[0], parts[2], tokenHash(token), weekStart)
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, projectReadLinkResponse(target))
+}
+
+func (api *handler) listReadLinks(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, managementHash string) {
+	if _, found := findSchedule(space, scheduleID); !found {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	store, ok := api.managementStore.(ReadLinkStore)
+	if !ok {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	links, err := store.ListReadLinks(request.Context(), spaceID, scheduleID, managementHash)
+	if err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		ReadLinks []ReadLink `json:"readLinks"`
+	}{ReadLinks: links})
+}
+
+func (api *handler) createReadLink(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, managementHash string) {
+	if _, found := findSchedule(space, scheduleID); !found {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	var payload struct {
+		StartWeek string `json:"startWeek"`
+		WeekCount int    `json:"weekCount"`
+	}
+	if err := decodeJSONBody(request, maximumRequestSize, &payload); err != nil {
+		writeJSONBodyError(response, err, "invalid_read_link")
+		return
+	}
+	if !validReadLinkScope(payload.StartWeek, payload.WeekCount) {
+		writeError(response, http.StatusBadRequest, "invalid_read_link")
+		return
+	}
+	store, ok := api.managementStore.(ReadLinkStore)
+	if !ok {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	linkID, err := newUUID()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	token, err := newManagementToken()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	link := ReadLink{ID: linkID, ScheduleID: scheduleID, StartWeek: payload.StartWeek, WeekCount: payload.WeekCount}
+	if err := store.CreateReadLink(request.Context(), spaceID, scheduleID, managementHash, link, tokenHash(token)); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, struct {
+		ReadLink  ReadLink `json:"readLink"`
+		ReadToken string   `json:"readToken"`
+	}{ReadLink: link, ReadToken: token})
+}
+
+func (api *handler) revokeReadLink(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, linkID, managementHash string) {
+	if _, found := findSchedule(space, scheduleID); !found {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	store, ok := api.managementStore.(ReadLinkStore)
+	if !ok {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	if err := store.RevokeReadLink(request.Context(), spaceID, scheduleID, linkID, managementHash); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func validReadLinkScope(startWeek string, weekCount int) bool {
+	if weekCount < 1 || weekCount > 4 {
+		return false
+	}
+	start, err := parseCalendarDate(startWeek)
+	return err == nil && start.Format("2006-01-02") == startWeek && start.Weekday() == time.Monday
+}
+
+func projectReadLinkResponse(target ReadLinkTarget) ReadLinkResponse {
+	response := ReadLinkResponse{
+		Schedule:  ReadLinkScheduleView{ID: target.Schedule.ID, Name: target.Schedule.Name, TimeZone: target.Schedule.TimeZone},
+		StartWeek: target.StartWeek,
+		WeekCount: target.WeekCount,
+		Week: ReadLinkWeekView{
+			WeekStart: target.Week.WeekStart,
+			WeekEnd:   target.Week.WeekEnd,
+			TimeZone:  target.Week.TimeZone,
+			People:    make([]ReadLinkPersonWeekView, 0, len(target.Week.People)),
+		},
+	}
+	for _, personWeek := range target.Week.People {
+		readerPerson := ReadLinkPersonWeekView{Person: personWeek.Person, Days: make([]ReadLinkDayView, 0, len(personWeek.Days))}
+		for _, day := range personWeek.Days {
+			state := day.State
+			if state == DayStateMedicalLeave {
+				state = "unavailable"
+			}
+			readerPerson.Days = append(readerPerson.Days, ReadLinkDayView{
+				Date: day.Date, Weekday: day.Weekday, State: state, WorkPeriod: day.WorkPeriod,
+			})
+		}
+		response.Week.People = append(response.Week.People, readerPerson)
+	}
+	return response
 }
 
 func (api *handler) replaceManagementLink(response http.ResponseWriter, request *http.Request, spaceID, currentToken string) {

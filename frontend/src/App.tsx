@@ -425,6 +425,12 @@ function ManagementSpaceApp() {
           case "creation_rate_limited":
             setError("Muitas tentativas de criação. Aguarde um minuto e tente novamente.");
             break;
+          case "creation_paused":
+            setError("A criação de novos Espaços de gestão está temporariamente pausada. Os Espaços existentes continuam disponíveis; tente novamente mais tarde.");
+            break;
+          case "platform_quota_exhausted":
+            setError("Um limite da plataforma impediu a criação do Espaço. Tente novamente mais tarde.");
+            break;
           default:
             setError("Não foi possível criar o Espaço agora. Tente novamente.");
         }

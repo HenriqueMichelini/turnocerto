@@ -7,7 +7,20 @@
   "vars": {
     "APP_ENV": "production",
     "WEB_ORIGIN": "https://turnocerto.pages.dev",
-    "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev"
+    "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev",
+    "SPACE_CREATION_PAUSED": "false",
+    "FREE_QUOTA_MEASURED_AT_UTC": "",
+    "FREE_QUOTA_WORKER_REQUESTS_PER_DAY": "",
+    "FREE_QUOTA_WORKER_HIGH_QUANTILE_CPU_MS": "",
+    "FREE_QUOTA_WORKER_COUNT": "",
+    "FREE_QUOTA_PAGES_BUILDS_PER_MONTH": "",
+    "FREE_QUOTA_PAGES_ASSET_FILES": "",
+    "FREE_QUOTA_PAGES_PROJECT_COUNT": "",
+    "FREE_QUOTA_D1_ROWS_READ_PER_DAY": "",
+    "FREE_QUOTA_D1_ROWS_WRITTEN_PER_DAY": "",
+    "FREE_QUOTA_D1_LARGEST_DATABASE_BYTES": "",
+    "FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES": "",
+    "FREE_QUOTA_D1_DATABASE_COUNT": ""
   },
   "ratelimits": [
     {
@@ -33,7 +46,20 @@
       "vars": {
         "APP_ENV": "production",
         "WEB_ORIGIN": "https://turnocerto.pages.dev",
-        "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev"
+        "TURNSTILE_ALLOWED_HOSTNAME": "turnocerto.pages.dev",
+        "SPACE_CREATION_PAUSED": "false",
+        "FREE_QUOTA_MEASURED_AT_UTC": "",
+        "FREE_QUOTA_WORKER_REQUESTS_PER_DAY": "",
+        "FREE_QUOTA_WORKER_HIGH_QUANTILE_CPU_MS": "",
+        "FREE_QUOTA_WORKER_COUNT": "",
+        "FREE_QUOTA_PAGES_BUILDS_PER_MONTH": "",
+        "FREE_QUOTA_PAGES_ASSET_FILES": "",
+        "FREE_QUOTA_PAGES_PROJECT_COUNT": "",
+        "FREE_QUOTA_D1_ROWS_READ_PER_DAY": "",
+        "FREE_QUOTA_D1_ROWS_WRITTEN_PER_DAY": "",
+        "FREE_QUOTA_D1_LARGEST_DATABASE_BYTES": "",
+        "FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES": "",
+        "FREE_QUOTA_D1_DATABASE_COUNT": ""
       },
       "ratelimits": [
         {
@@ -59,7 +85,20 @@
       "vars": {
         "APP_ENV": "preview",
         "WEB_ORIGIN": "https://preview.turnocerto.pages.dev",
-        "TURNSTILE_ALLOWED_HOSTNAME": "preview.turnocerto.pages.dev"
+        "TURNSTILE_ALLOWED_HOSTNAME": "preview.turnocerto.pages.dev",
+        "SPACE_CREATION_PAUSED": "false",
+        "FREE_QUOTA_MEASURED_AT_UTC": "",
+        "FREE_QUOTA_WORKER_REQUESTS_PER_DAY": "",
+        "FREE_QUOTA_WORKER_HIGH_QUANTILE_CPU_MS": "",
+        "FREE_QUOTA_WORKER_COUNT": "",
+        "FREE_QUOTA_PAGES_BUILDS_PER_MONTH": "",
+        "FREE_QUOTA_PAGES_ASSET_FILES": "",
+        "FREE_QUOTA_PAGES_PROJECT_COUNT": "",
+        "FREE_QUOTA_D1_ROWS_READ_PER_DAY": "",
+        "FREE_QUOTA_D1_ROWS_WRITTEN_PER_DAY": "",
+        "FREE_QUOTA_D1_LARGEST_DATABASE_BYTES": "",
+        "FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES": "",
+        "FREE_QUOTA_D1_DATABASE_COUNT": ""
       },
       "ratelimits": [
         {

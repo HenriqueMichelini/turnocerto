@@ -14,6 +14,8 @@ The integration suite builds the Go WebAssembly module, starts a local Worker wi
 
 ## Cloudflare environments
 
-Create separate D1 databases and Worker environments for preview and production. The committed D1 IDs and Pages origins are examples; remote commands reject them. Configure the matching IDs and `WEB_ORIGIN` values in `wrangler.api.jsonc` before remote operations. The frontend build must receive the API Worker origin through `VITE_API_BASE_URL`.
+Create separate D1 databases and Worker environments for preview and production. The committed D1 IDs and Pages origins are examples; remote commands reject them. Configure the matching IDs, `WEB_ORIGIN`, and current Cloudflare quota measurements in `wrangler.api.jsonc` before remote operations. The frontend build must receive the API Worker origin through `VITE_API_BASE_URL`.
 
 See [the Cloudflare preview runbook](docs/operations/cloudflare-preview.md) for resource setup, migration and rollback steps, deployment commands, and the deployed smoke-check record.
+
+Production operators also use [the Free quota monitoring procedure](docs/operations/free-quota-monitoring.md) to refresh measured account usage, adjust new-Space admission, and respond to an exhausted platform limit.

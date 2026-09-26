@@ -6,6 +6,23 @@ import { checkDeploymentConfiguration } from "../scripts/check-deployment-config
 const config = JSON.parse(readFileSync(new URL("../wrangler.api.jsonc", import.meta.url), "utf8"));
 
 describe("Go API Worker D1 environment safety", () => {
+  it("keeps measured quota variables aligned with the Go parser and remote deployment checker", () => {
+    const goWorkerSource = readFileSync(new URL("../backend/cmd/api/main_js.go", import.meta.url), "utf8");
+    const deploymentCheckerSource = readFileSync(new URL("../scripts/check-deployment-config.mjs", import.meta.url), "utf8");
+    const expected = Object.keys(config.env.production.vars)
+      .filter((name) => name.startsWith("FREE_QUOTA_") && name !== "FREE_QUOTA_MEASURED_AT_UTC")
+      .sort();
+    const goParserNames = [...goWorkerSource.matchAll(/read\("(FREE_QUOTA_[A-Z0-9_]+)"\)/g)]
+      .map((match) => match[1])
+      .sort();
+    const deploymentCheckerNames = [...deploymentCheckerSource.matchAll(/^\s+"(FREE_QUOTA_[A-Z0-9_]+)",?$/gm)]
+      .map((match) => match[1])
+      .sort();
+
+    assert.deepEqual(goParserNames, expected);
+    assert.deepEqual(deploymentCheckerNames, expected);
+  });
+
   it("keeps preview and production on isolated databases", () => {
     assert.match(checkDeploymentConfiguration(config, "preview"), /isolated D1/);
     assert.match(checkDeploymentConfiguration(config, "production"), /isolated D1/);
@@ -59,6 +76,30 @@ describe("Go API Worker D1 environment safety", () => {
     );
   });
 
+  it("blocks remote operations until measured quota snapshots are populated", () => {
+    assert.throws(
+      () => checkDeploymentConfiguration(config, "production", true),
+      /Configure measured Cloudflare Free quota usage for the production environment/,
+    );
+  });
+
+  it("accepts current measured usage and rejects stale remote quota snapshots", () => {
+    const measuredConfig = structuredClone(config);
+    for (const environment of [measuredConfig, measuredConfig.env.preview, measuredConfig.env.production]) {
+      environment.vars.FREE_QUOTA_MEASURED_AT_UTC = new Date().toISOString();
+      for (const name of Object.keys(environment.vars).filter((key) => key.startsWith("FREE_QUOTA_") && key !== "FREE_QUOTA_MEASURED_AT_UTC")) {
+        environment.vars[name] = "0";
+      }
+    }
+    assert.match(checkDeploymentConfiguration(measuredConfig, "production", true), /isolated D1/);
+
+    measuredConfig.env.production.vars.FREE_QUOTA_MEASURED_AT_UTC = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    assert.throws(
+      () => checkDeploymentConfiguration(measuredConfig, "production", true),
+      /current-day Cloudflare quota snapshot measured within three hours/,
+    );
+  });
+
   it("requires HTTPS site origins for the browser API", () => {
     const unsafeConfig = structuredClone(config);
     unsafeConfig.env.preview.vars.WEB_ORIGIN = "http://preview.turnocerto.pages.dev";
@@ -99,6 +140,16 @@ describe("Go API Worker D1 environment safety", () => {
     assert.throws(
       () => checkDeploymentConfiguration(unsafeConfig, "preview"),
       /TURNSTILE_ALLOWED_HOSTNAME must match/,
+    );
+  });
+
+  it("requires an explicit creation admission switch in every API environment", () => {
+    const unsafeConfig = structuredClone(config);
+    delete unsafeConfig.env.production.vars.SPACE_CREATION_PAUSED;
+
+    assert.throws(
+      () => checkDeploymentConfiguration(unsafeConfig, "production"),
+      /SPACE_CREATION_PAUSED to true or false/,
     );
   });
 });

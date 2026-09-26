@@ -115,9 +115,13 @@ type CreationRateLimiter interface {
 }
 
 type ManagementSecurity struct {
-	ChallengeVerifier   TurnstileVerifier
-	CreationRateLimiter CreationRateLimiter
-	ChallengeHostname   string
+	ChallengeVerifier      TurnstileVerifier
+	CreationRateLimiter    CreationRateLimiter
+	ChallengeHostname      string
+	CreationPaused         bool
+	QuotaMonitoringEnabled bool
+	QuotaMonitoringReady   bool
+	QuotaUsage             FreeQuotaUsage
 }
 
 type turnstileVerifier struct {
@@ -180,6 +184,12 @@ func (api *handler) createManagementSpace(response http.ResponseWriter, request 
 	}
 	if !api.managementEnabled() {
 		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	if api.managementSecurity.CreationPaused ||
+		(api.managementSecurity.QuotaMonitoringEnabled && !api.managementSecurity.QuotaMonitoringReady) ||
+		api.managementSecurity.QuotaUsage.ApproachingFreeLimit() {
+		writeError(response, http.StatusServiceUnavailable, "creation_paused")
 		return
 	}
 	if api.managementSecurity.ChallengeVerifier == nil || api.managementSecurity.CreationRateLimiter == nil {
@@ -271,7 +281,7 @@ func (api *handler) createManagementSpace(response http.ResponseWriter, request 
 		ManagementSpace: managementSpace,
 	}
 	if err := api.managementStore.CreateManagementSpace(request.Context(), managementSpace, firstSchedule, tokenHash(token)); err != nil {
-		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		writeStoreError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, struct {

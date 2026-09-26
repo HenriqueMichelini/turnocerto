@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +21,7 @@ type managementSpaceStore struct {
 	createdSchedule        schedule.Schedule
 	credentialHash         string
 	createCalls            int
+	createErr              error
 	spaces                 map[string]schedule.ManagementSpaceView
 	tokenHashes            map[string]string
 }
@@ -29,6 +31,9 @@ func (store *managementSpaceStore) CreateManagementSpace(_ context.Context, spac
 	store.createdSchedule = firstSchedule
 	store.credentialHash = tokenHash
 	store.createCalls++
+	if store.createErr != nil {
+		return store.createErr
+	}
 	if store.spaces == nil {
 		store.spaces = make(map[string]schedule.ManagementSpaceView)
 		store.tokenHashes = make(map[string]string)
@@ -36,6 +41,159 @@ func (store *managementSpaceStore) CreateManagementSpace(_ context.Context, spac
 	store.spaces[space.ID] = schedule.ManagementSpaceView{ManagementSpace: space, Schedules: []schedule.Schedule{firstSchedule}}
 	store.tokenHashes[space.ID] = tokenHash
 	return nil
+}
+
+func TestCreationPauseUsesObservedFreeQuotaThresholdsAndKeepsExistingSpaceAvailable(t *testing.T) {
+	space := schedule.ManagementSpace{ID: "2e7b2b68-bc17-4f5d-9c50-4f6e4e290238", Name: "Clínica"}
+	firstSchedule := schedule.Schedule{ID: "7dd21a89-9741-4a5e-8c6d-5e6ea23fce14", Name: "Semana", ManagementSpace: space}
+	token := strings.Repeat("a", 43)
+	store := &managementSpaceStore{
+		spaces:      map[string]schedule.ManagementSpaceView{space.ID: {ManagementSpace: space, Schedules: []schedule.Schedule{firstSchedule}}},
+		tokenHashes: map[string]string{space.ID: hashManagementToken(token)},
+	}
+	handler := schedule.NewHTTPHandlerWithManagement(
+		&memoryScheduleStore{},
+		store,
+		"preview",
+		previewOrigin,
+		"",
+		schedule.ManagementSecurity{
+			CreationPaused: true,
+			ChallengeVerifier: challengeVerifierFunc(func(context.Context, string, string, string) (bool, error) {
+				t.Fatal("paused creation must stop before challenge verification")
+				return false, nil
+			}),
+			CreationRateLimiter: creationRateLimiterFunc(func(context.Context, string) (bool, error) {
+				t.Fatal("paused creation must stop before rate limiting")
+				return false, nil
+			}),
+		},
+	)
+
+	paused := managementRequest(handler, http.MethodPost, "/api/management-spaces", "", `{"spaceName":"Novo","scheduleName":"Semana","turnstileToken":"proof"}`)
+	if paused.Code != http.StatusServiceUnavailable || !strings.Contains(paused.Body.String(), `"error":"creation_paused"`) {
+		t.Fatalf("POST while paused = %d %s, want a distinct creation_paused response", paused.Code, paused.Body)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("creation store calls = %d, want 0 while paused", store.createCalls)
+	}
+
+	read := managementRequest(handler, http.MethodGet, "/api/management-spaces/"+space.ID, token, "")
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), space.ID) {
+		t.Fatalf("existing Space GET while creation is paused = %d %s, want its current data", read.Code, read.Body)
+	}
+	rename := managementRequest(handler, http.MethodPatch, "/api/management-spaces/"+space.ID+"/schedules/"+firstSchedule.ID, token, `{"name":"Semana atualizada"}`)
+	if rename.Code != http.StatusOK || !strings.Contains(rename.Body.String(), "Semana atualizada") {
+		t.Fatalf("existing Space edit while creation is paused = %d %s, want a successful rename", rename.Code, rename.Body)
+	}
+}
+
+func TestQuotaThresholdCrossingPausesSpaceCreation(t *testing.T) {
+	store := &managementSpaceStore{}
+	verifierCalls := 0
+	limiterCalls := 0
+	handler := schedule.NewHTTPHandlerWithManagement(
+		&memoryScheduleStore{},
+		store,
+		"preview",
+		previewOrigin,
+		"",
+		schedule.ManagementSecurity{
+			QuotaMonitoringEnabled: true,
+			QuotaMonitoringReady:   true,
+			QuotaUsage:             schedule.FreeQuotaUsage{D1RowsWrittenPerDay: 80_000},
+			ChallengeVerifier: challengeVerifierFunc(func(context.Context, string, string, string) (bool, error) {
+				verifierCalls++
+				return true, nil
+			}),
+			CreationRateLimiter: creationRateLimiterFunc(func(context.Context, string) (bool, error) {
+				limiterCalls++
+				return true, nil
+			}),
+		},
+	)
+
+	response := managementRequest(handler, http.MethodPost, "/api/management-spaces", "", `{"spaceName":"Novo","scheduleName":"Semana","turnstileToken":"proof"}`)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"error":"creation_paused"`) {
+		t.Fatalf("POST at observed 80%% D1 write usage = %d %s, want creation_paused", response.Code, response.Body)
+	}
+	if verifierCalls != 0 || limiterCalls != 0 || store.createCalls != 0 {
+		t.Fatalf("rate-limit, verification, and store calls = %d/%d/%d, want 0/0/0 after threshold crossing", limiterCalls, verifierCalls, store.createCalls)
+	}
+}
+
+func TestSpaceCreationFailsClosedWhenQuotaSnapshotIsIncomplete(t *testing.T) {
+	store := &managementSpaceStore{}
+	handler := schedule.NewHTTPHandlerWithManagement(
+		&memoryScheduleStore{},
+		store,
+		"preview",
+		previewOrigin,
+		"",
+		schedule.ManagementSecurity{QuotaMonitoringEnabled: true},
+	)
+	response := managementRequest(handler, http.MethodPost, "/api/management-spaces", "", `{"spaceName":"Novo","scheduleName":"Semana","turnstileToken":"proof"}`)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"error":"creation_paused"`) {
+		t.Fatalf("POST with incomplete quota measurements = %d %s, want creation_paused", response.Code, response.Body)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("creation store calls = %d, want 0 until quota measurements are complete", store.createCalls)
+	}
+}
+
+func TestSpaceCreationFailsClosedWhenQuotaSnapshotIsStale(t *testing.T) {
+	store := &managementSpaceStore{}
+	handler := schedule.NewHTTPHandlerWithManagement(
+		&memoryScheduleStore{},
+		store,
+		"preview",
+		previewOrigin,
+		"",
+		schedule.ManagementSecurity{QuotaMonitoringEnabled: true, QuotaMonitoringReady: false},
+	)
+	response := managementRequest(handler, http.MethodPost, "/api/management-spaces", "", `{"spaceName":"Novo","scheduleName":"Semana","turnstileToken":"proof"}`)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"error":"creation_paused"`) {
+		t.Fatalf("POST with a stale quota snapshot = %d %s, want creation_paused", response.Code, response.Body)
+	}
+}
+
+func TestD1QuotaErrorsHaveADistinctSanitizedCreationResponse(t *testing.T) {
+	for _, detail := range []string{
+		"D1_ERROR: Your account has exceeded D1's free tier daily row read limit.",
+		"D1_ERROR: Your account has exceeded D1's free tier daily row write limit.",
+		"D1_ERROR: Your account has exceeded D1's maximum account storage limit",
+		"D1_ERROR: Exceeded maximum DB size.",
+	} {
+		t.Run(detail, func(t *testing.T) {
+			store := &managementSpaceStore{createErr: errors.New(detail)}
+			handler := schedule.NewHTTPHandlerWithManagement(
+				&memoryScheduleStore{},
+				store,
+				"preview",
+				previewOrigin,
+				"",
+				schedule.ManagementSecurity{
+					ChallengeVerifier:   challengeVerifierFunc(func(context.Context, string, string, string) (bool, error) { return true, nil }),
+					CreationRateLimiter: creationRateLimiterFunc(func(context.Context, string) (bool, error) { return true, nil }),
+				},
+			)
+			request := httptest.NewRequest(http.MethodPost, "/api/management-spaces", strings.NewReader(`{"spaceName":"Sensitive clinic","scheduleName":"Sensitive schedule","turnstileToken":"secret-proof"}`))
+			request.Header.Set("Origin", previewOrigin)
+			request.Header.Set("CF-Connecting-IP", "198.51.100.42")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"error":"platform_quota_exhausted"`) {
+				t.Fatalf("POST after D1 quota error = %d %s, want a distinct platform_quota_exhausted response", response.Code, response.Body)
+			}
+			for _, sensitive := range []string{detail, "Sensitive clinic", "Sensitive schedule", "secret-proof", "198.51.100.42"} {
+				if strings.Contains(response.Body.String(), sensitive) {
+					t.Fatalf("quota error response exposed %q: %s", sensitive, response.Body)
+				}
+			}
+		})
+	}
 }
 
 func (store *managementSpaceStore) GetManagementSpace(_ context.Context, spaceID, tokenHash string) (schedule.ManagementSpaceView, error) {

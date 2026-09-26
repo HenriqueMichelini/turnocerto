@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"syscall/js"
 	"time"
@@ -445,12 +446,17 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	appEnv := environmentValue(env, "APP_ENV")
 	webOrigin := environmentValue(env, "WEB_ORIGIN")
 	previewTokenHash := environmentValue(env, "PREVIEW_TOKEN_HASH")
+	quotaUsage, quotaMonitoringReady := freeQuotaUsageFromEnvironment(env)
 	security := schedule.ManagementSecurity{
 		ChallengeVerifier: schedule.NewTurnstileVerifier(environmentValue(env, "TURNSTILE_SECRET_KEY")),
 		CreationRateLimiter: cloudflareRateLimiter{
 			binding: env.Get("CREATION_RATE_LIMITER"),
 		},
-		ChallengeHostname: environmentValue(env, "TURNSTILE_ALLOWED_HOSTNAME"),
+		ChallengeHostname:      environmentValue(env, "TURNSTILE_ALLOWED_HOSTNAME"),
+		CreationPaused:         creationPauseValue(env),
+		QuotaMonitoringEnabled: true,
+		QuotaMonitoringReady:   quotaMonitoringReady,
+		QuotaUsage:             quotaUsage,
 	}
 	handler := schedule.NewHTTPHandlerWithManagement(store, store, appEnv, webOrigin, previewTokenHash, security)
 	responseRecorder := &workerResponse{header: make(http.Header)}
@@ -1204,7 +1210,16 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 	rejected := js.FuncOf(func(_ js.Value, values []js.Value) any {
 		message := "promise rejected"
 		if len(values) > 0 {
-			message = values[0].String()
+			failure := values[0]
+			if failure.Type() == js.TypeObject || failure.Type() == js.TypeFunction {
+				if detail := failure.Get("message"); detail.Type() == js.TypeString && detail.String() != "" {
+					message = detail.String()
+				} else {
+					message = failure.String()
+				}
+			} else {
+				message = failure.String()
+			}
 		}
 		result <- promiseResult{err: errors.New(message)}
 		return nil
@@ -1239,6 +1254,46 @@ func environmentValue(env js.Value, name string) string {
 		return ""
 	}
 	return value.String()
+}
+
+func creationPauseValue(env js.Value) bool {
+	value := strings.TrimSpace(environmentValue(env, "SPACE_CREATION_PAUSED"))
+	return value != "" && !strings.EqualFold(value, "false")
+}
+
+func freeQuotaUsageFromEnvironment(env js.Value) (schedule.FreeQuotaUsage, bool) {
+	ready := true
+	read := func(name string) int64 {
+		value, configured := quotaUsageValue(env, name)
+		ready = ready && configured
+		return value
+	}
+	usage := schedule.FreeQuotaUsage{
+		WorkerRequestsPerDay:    read("FREE_QUOTA_WORKER_REQUESTS_PER_DAY"),
+		WorkerHighQuantileCPUMS: read("FREE_QUOTA_WORKER_HIGH_QUANTILE_CPU_MS"),
+		WorkerCount:             read("FREE_QUOTA_WORKER_COUNT"),
+		PagesBuildsPerMonth:     read("FREE_QUOTA_PAGES_BUILDS_PER_MONTH"),
+		PagesAssetFiles:         read("FREE_QUOTA_PAGES_ASSET_FILES"),
+		PagesProjectCount:       read("FREE_QUOTA_PAGES_PROJECT_COUNT"),
+		D1RowsReadPerDay:        read("FREE_QUOTA_D1_ROWS_READ_PER_DAY"),
+		D1RowsWrittenPerDay:     read("FREE_QUOTA_D1_ROWS_WRITTEN_PER_DAY"),
+		D1LargestDatabaseBytes:  read("FREE_QUOTA_D1_LARGEST_DATABASE_BYTES"),
+		D1AccountStorageBytes:   read("FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES"),
+		D1DatabaseCount:         read("FREE_QUOTA_D1_DATABASE_COUNT"),
+	}
+	return usage, ready && schedule.QuotaSnapshotIsCurrent(environmentValue(env, "FREE_QUOTA_MEASURED_AT_UTC"), time.Now())
+}
+
+func quotaUsageValue(env js.Value, name string) (int64, bool) {
+	value := strings.TrimSpace(environmentValue(env, name))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return -1, false
+	}
+	return parsed, true
 }
 
 func jsResponse(status int, headers http.Header, body []byte) js.Value {

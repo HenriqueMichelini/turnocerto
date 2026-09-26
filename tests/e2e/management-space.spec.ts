@@ -107,6 +107,33 @@ test("a visitor creates a Space and can reopen and edit both names from the Mana
   }
 });
 
+test("the creation form explains admission pauses and exhausted platform quotas separately", async ({ context }) => {
+  for (const outcome of [
+    {
+      code: "creation_paused",
+      message: "A criação de novos Espaços de gestão está temporariamente pausada. Os Espaços existentes continuam disponíveis; tente novamente mais tarde.",
+    },
+    {
+      code: "platform_quota_exhausted",
+      message: "Um limite da plataforma impediu a criação do Espaço. Tente novamente mais tarde.",
+    },
+  ]) {
+    const page = await context.newPage();
+    await useTestTurnstile(page);
+    await page.route("**/api/management-spaces", (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: outcome.code }),
+    }));
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "Nome do Espaço de gestão" }).fill("Espaço de teste");
+    await page.getByRole("textbox", { name: "Nome da primeira escala" }).fill("Semana de teste");
+    await page.getByRole("button", { name: "Criar Espaço e escala" }).click();
+    await expect(page.getByRole("alert")).toHaveText(outcome.message);
+    await page.close();
+  }
+});
+
 test("the browser assigns one shared Person to overlapping Schedules and opens derived weeks in Brazilian Portuguese", async ({ page, request }) => {
   const created = await createManagementSpace(request, "Espaço de escala", "198.51.100.31");
   expect(created.status()).toBe(201);

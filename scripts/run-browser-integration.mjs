@@ -29,7 +29,11 @@ const localArgs = ["--config", apiConfigPath, "--env", targetEnvironment, "--loc
 const runWrangler = (args) =>
   execFileSync(process.execPath, [wranglerCli, ...args], { cwd: repositoryRoot, stdio: "inherit" });
 
-checkDeploymentConfiguration(JSON.parse(await readFile(apiConfigPath, "utf8")), targetEnvironment);
+const apiConfig = JSON.parse(await readFile(apiConfigPath, "utf8"));
+const localQuotaUsageNames = Object.keys(apiConfig.env[targetEnvironment].vars).filter(
+  (name) => name.startsWith("FREE_QUOTA_") && name !== "FREE_QUOTA_MEASURED_AT_UTC",
+);
+checkDeploymentConfiguration(apiConfig, targetEnvironment);
 await rm(stateDirectory, { recursive: true, force: true });
 runWrangler(["d1", "migrations", "apply", "DB", ...localArgs]);
 if (targetEnvironment === "preview") {
@@ -79,6 +83,9 @@ const apiServer = start([
   `TURNSTILE_SECRET_KEY:${turnstileTestSecretKey}`,
   "--var",
   "TURNSTILE_ALLOWED_HOSTNAME:example.com",
+  "--var",
+  `FREE_QUOTA_MEASURED_AT_UTC:${new Date().toISOString()}`,
+  ...localQuotaUsageNames.flatMap((name) => ["--var", `${name}:0`]),
   ...(previewTokenHash ? ["--var", `PREVIEW_TOKEN_HASH:${previewTokenHash}`] : []),
 ]);
 const frontendServer = start([viteCli, "preview", "--host", "127.0.0.1", "--port", "8788", "--strictPort"]);

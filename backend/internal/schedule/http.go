@@ -21,6 +21,7 @@ const (
 )
 
 var ErrNotFound = errors.New("schedule not found")
+var ErrPlatformQuotaExceeded = errors.New("platform quota exceeded")
 
 type ManagementSpace struct {
 	ID   string `json:"id"`
@@ -221,6 +222,10 @@ func setCorsHeaders(headers http.Header, origin string) {
 }
 
 func writeStoreError(response http.ResponseWriter, err error) {
+	if isPlatformQuotaError(err) {
+		writeError(response, http.StatusServiceUnavailable, "platform_quota_exhausted")
+		return
+	}
 	if errors.Is(err, ErrStaleScheduleEdit) {
 		writeError(response, http.StatusConflict, "stale_schedule_edit")
 		return
@@ -239,6 +244,24 @@ func writeStoreError(response http.ResponseWriter, err error) {
 		return
 	}
 	writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+}
+
+func isPlatformQuotaError(err error) bool {
+	if errors.Is(err, ErrPlatformQuotaExceeded) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"exceeded d1's free tier daily row read limit",
+		"exceeded d1's free tier daily row write limit",
+		"exceeded d1's maximum account storage limit",
+		"exceeded maximum db size",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSchedule(response http.ResponseWriter, schedule Schedule) {

@@ -6,6 +6,19 @@ const placeholderDatabaseIds = new Set([
   "00000000-0000-4000-8000-000000000001",
   "00000000-0000-4000-8000-000000000002",
 ]);
+const freeQuotaUsageVariables = [
+  "FREE_QUOTA_WORKER_REQUESTS_PER_DAY",
+  "FREE_QUOTA_WORKER_HIGH_QUANTILE_CPU_MS",
+  "FREE_QUOTA_WORKER_COUNT",
+  "FREE_QUOTA_PAGES_BUILDS_PER_MONTH",
+  "FREE_QUOTA_PAGES_ASSET_FILES",
+  "FREE_QUOTA_PAGES_PROJECT_COUNT",
+  "FREE_QUOTA_D1_ROWS_READ_PER_DAY",
+  "FREE_QUOTA_D1_ROWS_WRITTEN_PER_DAY",
+  "FREE_QUOTA_D1_LARGEST_DATABASE_BYTES",
+  "FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES",
+  "FREE_QUOTA_D1_DATABASE_COUNT",
+];
 
 export function checkDeploymentConfiguration(config, targetEnvironment, requireRealId = false) {
   if (!new Set(["preview", "production"]).has(targetEnvironment)) {
@@ -64,6 +77,23 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   for (const environment of [preview, production, config]) {
     const webOrigin = environment.vars?.WEB_ORIGIN;
     const challengeHostname = environment.vars?.TURNSTILE_ALLOWED_HOSTNAME;
+    const creationPaused = environment.vars?.SPACE_CREATION_PAUSED;
+    const quotaMeasuredAt = environment.vars?.FREE_QUOTA_MEASURED_AT_UTC;
+    if (!new Set(["true", "false"]).has(creationPaused)) {
+      throw new Error("Every API Worker environment must set SPACE_CREATION_PAUSED to true or false.");
+    }
+    for (const name of freeQuotaUsageVariables) {
+      const value = environment.vars?.[name];
+      if (typeof value !== "string" || (value !== "" && !/^\d+$/.test(value))) {
+        throw new Error(`Every API Worker environment must set ${name} to a non-negative measured value or an empty string.`);
+      }
+    }
+    if (
+      typeof quotaMeasuredAt !== "string" ||
+      (quotaMeasuredAt !== "" && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(quotaMeasuredAt) || !Number.isFinite(Date.parse(quotaMeasuredAt))))
+    ) {
+      throw new Error("Every API Worker environment must set FREE_QUOTA_MEASURED_AT_UTC to a UTC timestamp or an empty string.");
+    }
     let parsedOrigin;
     try {
       parsedOrigin = new URL(webOrigin);
@@ -93,6 +123,22 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   const selectedEnvironment = targetEnvironment === "preview" ? preview : production;
   if (requireRealId && selectedEnvironment.vars.WEB_ORIGIN.includes("replace-me")) {
     throw new Error(`Configure the ${targetEnvironment} Pages origin before a remote operation.`);
+  }
+  if (requireRealId && freeQuotaUsageVariables.some((name) => selectedEnvironment.vars[name] === "")) {
+    throw new Error(`Configure measured Cloudflare Free quota usage for the ${targetEnvironment} environment before a remote operation.`);
+  }
+  if (requireRealId) {
+    const measuredAt = selectedEnvironment.vars.FREE_QUOTA_MEASURED_AT_UTC;
+    const measuredAtMilliseconds = Date.parse(measuredAt);
+    const ageMilliseconds = Date.now() - measuredAtMilliseconds;
+    if (
+      !measuredAt ||
+      ageMilliseconds < 0 ||
+      ageMilliseconds > 3 * 60 * 60 * 1000 ||
+      new Date(measuredAtMilliseconds).toISOString().slice(0, 10) !== new Date().toISOString().slice(0, 10)
+    ) {
+      throw new Error(`Configure a current-day Cloudflare quota snapshot measured within three hours for the ${targetEnvironment} environment before a remote operation.`);
+    }
   }
 
   return `${targetEnvironment} is configured with an isolated D1 database.`;

@@ -38,6 +38,12 @@
       "database_name": "turnocerto-production",
       "database_id": "719e8c0b-a2e4-429a-b863-9830f5203eff",
       "migrations_dir": "db/migrations"
+    },
+    {
+      "binding": "DELETION_DB",
+      "database_name": "turnocerto-deletion-ledger-production",
+      "database_id": "00000000-0000-4000-8000-000000000003",
+      "migrations_dir": "db/deletion-migrations"
     }
   ],
   "env": {
@@ -77,6 +83,12 @@
           "database_name": "turnocerto-production",
           "database_id": "719e8c0b-a2e4-429a-b863-9830f5203eff",
           "migrations_dir": "db/migrations"
+        },
+        {
+          "binding": "DELETION_DB",
+          "database_name": "turnocerto-deletion-ledger-production",
+          "database_id": "00000000-0000-4000-8000-000000000003",
+          "migrations_dir": "db/deletion-migrations"
         }
       ]
     },
@@ -116,6 +128,12 @@
           "database_name": "turnocerto-preview",
           "database_id": "3527c507-1a42-4ad3-bce1-6cf26ad0342e",
           "migrations_dir": "db/migrations"
+        },
+        {
+          "binding": "DELETION_DB",
+          "database_name": "turnocerto-deletion-ledger-preview",
+          "database_id": "00000000-0000-4000-8000-000000000004",
+          "migrations_dir": "db/deletion-migrations"
         }
       ]
     }

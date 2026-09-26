@@ -70,6 +70,8 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
 .management-link-panel input { font-size: 12px; }
 .management-link-panel .input-row button { min-width: 118px; }
 .text-button { display: inline-flex; min-height: 44px; align-items: center; margin-top: 18px; padding: 0; border: 0; background: none; color: #28694d; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.danger-button { display: inline-flex; min-height: 44px; align-items: center; margin-top: 18px; padding: 0 14px; border: 1px solid #c99c96; border-radius: 8px; background: #fff8f7; color: #81423c; font-size: 13px; font-weight: 700; cursor: pointer; }
+.danger-button:disabled { opacity: .55; cursor: not-allowed; }
 .empty-state { margin-bottom: 20px; color: #66766b; font-size: 14px; line-height: 1.6; }
 .form-hint { margin: 9px 0 0; color: #849088; font-size: 12px; }
 .loading-card { padding: 34px; border: 1px solid #e1e9e1; border-radius: 16px; background: white; color: #66766b; }

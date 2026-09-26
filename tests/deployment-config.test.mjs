@@ -26,6 +26,17 @@ describe("Go API Worker D1 environment safety", () => {
   it("keeps preview and production on isolated databases", () => {
     assert.match(checkDeploymentConfiguration(config, "preview"), /isolated D1/);
     assert.match(checkDeploymentConfiguration(config, "production"), /isolated D1/);
+    for (const environment of [config.env.preview, config.env.production]) {
+      const application = environment.d1_databases.find((database) => database.binding === "DB");
+      const deletionLedger = environment.d1_databases.find((database) => database.binding === "DELETION_DB");
+      assert.ok(application && deletionLedger);
+      assert.notEqual(application.database_id, deletionLedger.database_id);
+      assert.notEqual(application.database_name, deletionLedger.database_name);
+    }
+    assert.notEqual(
+      config.env.preview.d1_databases.find((database) => database.binding === "DELETION_DB").database_id,
+      config.env.production.d1_databases.find((database) => database.binding === "DELETION_DB").database_id,
+    );
   });
 
   it("rejects a preview configuration that points at production", () => {
@@ -76,15 +87,41 @@ describe("Go API Worker D1 environment safety", () => {
     );
   });
 
-  it("blocks remote operations until measured quota snapshots are populated", () => {
+  it("blocks remote operations until the separate deletion ledger is provisioned", () => {
+    assert.throws(
+      () => checkDeploymentConfiguration(config, "preview", true),
+      /Configure a real preview deletion-ledger D1 database ID/,
+    );
     assert.throws(
       () => checkDeploymentConfiguration(config, "production", true),
+      /Configure a real production deletion-ledger D1 database ID/,
+    );
+  });
+
+  it("blocks remote operations until measured quota snapshots are populated", () => {
+    const provisionedConfig = structuredClone(config);
+    const realIDs = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ];
+    provisionedConfig.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[0];
+    provisionedConfig.env.production.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[0];
+    provisionedConfig.env.preview.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[1];
+    assert.throws(
+      () => checkDeploymentConfiguration(provisionedConfig, "production", true),
       /Configure measured Cloudflare Free quota usage for the production environment/,
     );
   });
 
   it("accepts current measured usage and rejects stale remote quota snapshots", () => {
     const measuredConfig = structuredClone(config);
+    const realIDs = [
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ];
+    measuredConfig.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[0];
+    measuredConfig.env.production.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[0];
+    measuredConfig.env.preview.d1_databases.find((database) => database.binding === "DELETION_DB").database_id = realIDs[1];
     for (const environment of [measuredConfig, measuredConfig.env.preview, measuredConfig.env.production]) {
       environment.vars.FREE_QUOTA_MEASURED_AT_UTC = new Date().toISOString();
       for (const name of Object.keys(environment.vars).filter((key) => key.startsWith("FREE_QUOTA_") && key !== "FREE_QUOTA_MEASURED_AT_UTC")) {

@@ -23,6 +23,7 @@ const (
 	managementSpacesPath      = "/api/management-spaces"
 	readLinksPath             = "/api/read-links/"
 	maximumCreationBodySize   = 8192
+	maximumDeletionBodySize   = 1024
 	maximumTurnstileTokenSize = 2048
 	turnstileSiteverifyURL    = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 	defaultScheduleTimeZone   = "America/Sao_Paulo"
@@ -34,6 +35,21 @@ type ManagementSpaceView struct {
 	ManagementSpace ManagementSpace `json:"managementSpace"`
 	Schedules       []Schedule      `json:"schedules"`
 	People          []Person        `json:"people"`
+}
+
+type DeletionScope string
+
+const (
+	DeletionScopeSchedule        DeletionScope = "schedule"
+	DeletionScopeManagementSpace DeletionScope = "management_space"
+)
+
+// DeletionRecord contains only the identifiers needed to replay a deletion after
+// restoring the application database. It deliberately excludes schedule content.
+type DeletionRecord struct {
+	Scope      DeletionScope
+	SpaceID    string
+	ScheduleID string
 }
 
 type ReadLink struct {
@@ -89,6 +105,15 @@ type ManagementSpaceStore interface {
 	ReplaceManagementToken(context.Context, string, string, string) (bool, error)
 	RenameManagementSpace(context.Context, string, string, string) (ManagementSpace, error)
 	RenameManagementSchedule(context.Context, string, string, string, string) (Schedule, error)
+}
+
+type ManagementDeletionStore interface {
+	DeleteManagementSchedule(context.Context, string, string, string) error
+	DeleteManagementSpace(context.Context, string, string) error
+}
+
+type DeletionRecordStore interface {
+	RecordDeletion(context.Context, DeletionRecord) error
 }
 
 type SchedulingStore interface {
@@ -345,8 +370,8 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 	allow := ""
 	switch route {
 	case "space", "schedule":
-		allowed = request.Method == http.MethodGet || request.Method == http.MethodPatch
-		allow = "GET, PATCH, OPTIONS"
+		allowed = request.Method == http.MethodGet || request.Method == http.MethodPatch || request.Method == http.MethodDelete
+		allow = "GET, PATCH, DELETE, OPTIONS"
 	case "people", "schedules", "participations", "edits":
 		allowed = request.Method == http.MethodPost
 		allow = "POST, OPTIONS"
@@ -376,25 +401,31 @@ func (api *handler) managementSpaceRequest(response http.ResponseWriter, request
 	credentialHash := tokenHash(token)
 	switch route {
 	case "space":
-		if request.Method == http.MethodGet {
+		switch request.Method {
+		case http.MethodGet:
 			writeJSON(response, http.StatusOK, space)
-		} else {
+		case http.MethodPatch:
 			api.renameManagementSpace(response, request, spaceID, credentialHash)
+		case http.MethodDelete:
+			api.deleteManagementSpace(response, request, spaceID, credentialHash)
 		}
 	case "people":
 		api.createPerson(response, request, spaceID, credentialHash)
 	case "schedules":
 		api.createSchedule(response, request, spaceID, credentialHash)
 	case "schedule":
-		if request.Method == http.MethodGet {
+		switch request.Method {
+		case http.MethodGet:
 			weekStart := request.URL.Query().Get("weekStart")
 			if weekStart == "" {
 				writeJSON(response, http.StatusOK, space)
 				return
 			}
 			api.getScheduleWeek(response, space, parts[2], weekStart)
-		} else {
+		case http.MethodPatch:
 			api.updateManagementSchedule(response, request, spaceID, parts[2], credentialHash)
+		case http.MethodDelete:
+			api.deleteManagementSchedule(response, request, space, spaceID, parts[2], credentialHash)
 		}
 	case "participations":
 		api.createParticipation(response, request, space, spaceID, parts[2], credentialHash)
@@ -585,6 +616,78 @@ func (api *handler) replaceManagementLink(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, struct {
 		ManagementToken string `json:"managementToken"`
 	}{ManagementToken: nextToken})
+}
+
+func (api *handler) deleteManagementSchedule(response http.ResponseWriter, request *http.Request, space ManagementSpaceView, spaceID, scheduleID, credentialHash string) {
+	if !decodeConfirmedDeletion(response, request) {
+		return
+	}
+	if !managementSpaceContainsSchedule(space, scheduleID) {
+		writeError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	store, ok := api.managementStore.(ManagementDeletionStore)
+	if !ok || api.deletionStore == nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	if err := api.deletionStore.RecordDeletion(request.Context(), DeletionRecord{
+		Scope: DeletionScopeSchedule, SpaceID: spaceID, ScheduleID: scheduleID,
+	}); err != nil {
+		writeError(response, http.StatusServiceUnavailable, "deletion_record_unavailable")
+		return
+	}
+	if err := store.DeleteManagementSchedule(request.Context(), spaceID, scheduleID, credentialHash); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (api *handler) deleteManagementSpace(response http.ResponseWriter, request *http.Request, spaceID, credentialHash string) {
+	if !decodeConfirmedDeletion(response, request) {
+		return
+	}
+	store, ok := api.managementStore.(ManagementDeletionStore)
+	if !ok || api.deletionStore == nil {
+		writeError(response, http.StatusServiceUnavailable, "temporarily_unavailable")
+		return
+	}
+	if err := api.deletionStore.RecordDeletion(request.Context(), DeletionRecord{
+		Scope: DeletionScopeManagementSpace, SpaceID: spaceID,
+	}); err != nil {
+		writeError(response, http.StatusServiceUnavailable, "deletion_record_unavailable")
+		return
+	}
+	if err := store.DeleteManagementSpace(request.Context(), spaceID, credentialHash); err != nil {
+		writeStoreError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func decodeConfirmedDeletion(response http.ResponseWriter, request *http.Request) bool {
+	var payload struct {
+		Confirmed bool `json:"confirmed"`
+	}
+	if err := decodeJSONBody(request, maximumDeletionBodySize, &payload); err != nil {
+		writeJSONBodyError(response, err, "invalid_deletion_confirmation")
+		return false
+	}
+	if !payload.Confirmed {
+		writeError(response, http.StatusBadRequest, "deletion_confirmation_required")
+		return false
+	}
+	return true
+}
+
+func managementSpaceContainsSchedule(space ManagementSpaceView, scheduleID string) bool {
+	for _, calendar := range space.Schedules {
+		if calendar.ID == scheduleID {
+			return true
+		}
+	}
+	return false
 }
 
 func (api *handler) renameManagementSpace(response http.ResponseWriter, request *http.Request, spaceID, credentialHash string) {

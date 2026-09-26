@@ -228,6 +228,22 @@ WHERE management_spaces.id = ? AND management_spaces.management_token_hash = ?`
 const createScheduleRevisionQuery = `INSERT INTO schedule_revisions (schedule_id, revision)
 VALUES (?, ?)`
 
+const recordDeletionQuery = `INSERT INTO deletion_records (scope, space_id, schedule_id)
+VALUES (?, ?, ?)
+ON CONFLICT (scope, space_id, schedule_id) DO NOTHING`
+
+const deleteManagementScheduleQuery = `DELETE FROM schedules
+WHERE id = ? AND management_space_id = ?
+  AND EXISTS (
+    SELECT 1 FROM management_spaces
+    WHERE id = ? AND management_token_hash = ?
+  )
+RETURNING id`
+
+const deleteManagementSpaceQuery = `DELETE FROM management_spaces
+WHERE id = ? AND management_token_hash = ?
+RETURNING id`
+
 const updateScheduleRevisionQuery = `UPDATE schedule_revisions
 SET revision = ?
 WHERE schedule_id = ? AND revision = ?
@@ -415,7 +431,7 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	method := requestValue.Get("method").String()
 	url := requestValue.Get("url").String()
 	body := ""
-	if method == http.MethodPatch || method == http.MethodPost {
+	if method == http.MethodPatch || method == http.MethodPost || method == http.MethodDelete {
 		bodyValue, err := awaitPromise(requestValue.Call("text"))
 		if err != nil {
 			return failureResponse(requestValue, env)
@@ -443,6 +459,7 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 	}
 
 	store := d1Store{database: env.Get("DB")}
+	deletionStore := d1Store{database: env.Get("DELETION_DB")}
 	appEnv := environmentValue(env, "APP_ENV")
 	webOrigin := environmentValue(env, "WEB_ORIGIN")
 	previewTokenHash := environmentValue(env, "PREVIEW_TOKEN_HASH")
@@ -458,7 +475,7 @@ func handleRequest(requestValue, env js.Value) (response js.Value) {
 		QuotaMonitoringReady:   quotaMonitoringReady,
 		QuotaUsage:             quotaUsage,
 	}
-	handler := schedule.NewHTTPHandlerWithManagement(store, store, appEnv, webOrigin, previewTokenHash, security)
+	handler := schedule.NewHTTPHandlerWithManagement(store, store, appEnv, webOrigin, previewTokenHash, security, deletionStore)
 	responseRecorder := &workerResponse{header: make(http.Header)}
 	handler.ServeHTTP(responseRecorder, request)
 	status := responseRecorder.status
@@ -803,6 +820,40 @@ func (store d1Store) CreateSchedule(ctx context.Context, spaceID, tokenHash stri
 		return schedule.ErrUnauthorized
 	}
 	return schedule.ErrNotFound
+}
+
+func (store d1Store) DeleteManagementSchedule(_ context.Context, spaceID, scheduleID, tokenHash string) error {
+	row, err := store.firstPreparedRow(deleteManagementScheduleQuery, scheduleID, spaceID, spaceID, tokenHash)
+	if err != nil {
+		return err
+	}
+	if row.IsNull() || row.IsUndefined() {
+		return schedule.ErrNotFound
+	}
+	return nil
+}
+
+func (store d1Store) DeleteManagementSpace(_ context.Context, spaceID, tokenHash string) error {
+	row, err := store.firstPreparedRow(deleteManagementSpaceQuery, spaceID, tokenHash)
+	if err != nil {
+		return err
+	}
+	if row.IsNull() || row.IsUndefined() {
+		return schedule.ErrNotFound
+	}
+	return nil
+}
+
+func (store d1Store) RecordDeletion(_ context.Context, record schedule.DeletionRecord) error {
+	if store.database.IsUndefined() || store.database.IsNull() {
+		return errors.New("deletion ledger D1 binding is unavailable")
+	}
+	scheduleID := record.ScheduleID
+	if record.Scope == schedule.DeletionScopeManagementSpace {
+		scheduleID = ""
+	}
+	_, err := store.runPreparedChanges(recordDeletionQuery, string(record.Scope), record.SpaceID, scheduleID)
+	return err
 }
 
 func (store d1Store) CreatePerson(ctx context.Context, spaceID, tokenHash string, person schedule.Person) error {

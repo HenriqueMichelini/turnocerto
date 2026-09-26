@@ -45,6 +45,7 @@ type Store interface {
 type handler struct {
 	store              Store
 	managementStore    ManagementSpaceStore
+	deletionStore      DeletionRecordStore
 	managementSecurity ManagementSecurity
 	appEnv             string
 	webOrigin          string
@@ -56,9 +57,9 @@ func NewHTTPHandler(store Store, appEnv, webOrigin, previewTokenHashHex string) 
 	return &handler{store: store, appEnv: appEnv, webOrigin: webOrigin, previewTokenHash: previewTokenHash}
 }
 
-func NewHTTPHandlerWithManagement(store Store, managementStore ManagementSpaceStore, appEnv, webOrigin, previewTokenHashHex string, security ManagementSecurity) http.Handler {
+func NewHTTPHandlerWithManagement(store Store, managementStore ManagementSpaceStore, appEnv, webOrigin, previewTokenHashHex string, security ManagementSecurity, deletionStores ...DeletionRecordStore) http.Handler {
 	previewTokenHash, _ := hex.DecodeString(previewTokenHashHex)
-	return &handler{
+	api := &handler{
 		store:              store,
 		managementStore:    managementStore,
 		managementSecurity: security,
@@ -66,6 +67,12 @@ func NewHTTPHandlerWithManagement(store Store, managementStore ManagementSpaceSt
 		webOrigin:          webOrigin,
 		previewTokenHash:   previewTokenHash,
 	}
+	if len(deletionStores) > 0 {
+		api.deletionStore = deletionStores[0]
+	} else if records, ok := managementStore.(DeletionRecordStore); ok {
+		api.deletionStore = records
+	}
+	return api
 }
 
 func (api *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {

@@ -285,6 +285,11 @@ function ManagementSpaceApp() {
   const [managementLoadVersion, setManagementLoadVersion] = useState(0);
   const [isCreating, setIsCreating] = useState(false);
   const [isSavingSpace, setIsSavingSpace] = useState(false);
+  const [isDeletingSchedule, setIsDeletingSchedule] = useState(false);
+  const [isDeletingSpace, setIsDeletingSpace] = useState(false);
+  const [emptySpaceScheduleName, setEmptySpaceScheduleName] = useState("Nova escala");
+  const [emptySpaceTimeZone, setEmptySpaceTimeZone] = useState(suggestedTimeZone);
+  const [isCreatingEmptySpaceSchedule, setIsCreatingEmptySpaceSchedule] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [isReplacingManagementLink, setIsReplacingManagementLink] = useState(false);
@@ -505,6 +510,107 @@ function ManagementSpaceApp() {
     }
   }
 
+  async function deleteManagementSchedule() {
+    if (!space || !schedule || isDeletingSchedule) return;
+    const confirmed = window.confirm(
+      `Excluir a escala “${schedule.name}”? Os dados ativos e os links de leitura desta escala serão removidos. O Espaço e o link de gestão continuarão disponíveis para as demais escalas.`,
+    );
+    if (!confirmed) return;
+
+    setIsDeletingSchedule(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`${managementApiUrl}/${encodeURIComponent(space.id)}/schedules/${encodeURIComponent(schedule.id)}`, {
+        method: "DELETE",
+        headers: managementRequestHeaders(managementToken, { Accept: "application/json", "Content-Type": "application/json" }),
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({})) as { error?: string };
+        if (failure.error === "deletion_record_unavailable") {
+          throw new Error("deletion_record_unavailable");
+        }
+        throw new Error("schedule_deletion_failed");
+      }
+
+      const remaining = schedules.filter((calendar) => calendar.id !== schedule.id);
+      const nextSchedule = remaining[0] ?? null;
+      setSchedules(remaining);
+      setSchedule(nextSchedule);
+      setScheduleName(nextSchedule?.name ?? "");
+      setMessage("Escala excluída. Os links de leitura dela foram invalidados, e o link de gestão continua ativo.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error && deleteError.message === "deletion_record_unavailable"
+        ? "Não foi possível registrar a exclusão. A escala e seus links continuam disponíveis; tente novamente mais tarde."
+        : "Não foi possível confirmar a exclusão. Atualize o Espaço para conferir o estado antes de tentar novamente.");
+    } finally {
+      setIsDeletingSchedule(false);
+    }
+  }
+
+  async function createScheduleInEmptySpace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!space || isCreatingEmptySpaceSchedule) return;
+
+    setIsCreatingEmptySpaceSchedule(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`${managementApiUrl}/${encodeURIComponent(space.id)}/schedules`, {
+        method: "POST",
+        headers: managementRequestHeaders(managementToken, { Accept: "application/json", "Content-Type": "application/json" }),
+        body: JSON.stringify({ name: emptySpaceScheduleName, timeZone: emptySpaceTimeZone }),
+      });
+      if (!response.ok) throw new Error("schedule_creation_failed");
+      const result = await response.json() as ScheduleResponse;
+      const created = { ...result.schedule, managementSpace: space };
+      setSchedules((current) => [...current, created]);
+      setSchedule(created);
+      setScheduleName(created.name);
+      setMessage("Escala criada.");
+    } catch {
+      setError("Não foi possível criar a escala. Confira o nome e o fuso horário e tente novamente.");
+    } finally {
+      setIsCreatingEmptySpaceSchedule(false);
+    }
+  }
+
+  async function deleteManagementSpace() {
+    if (!space || isDeletingSpace) return;
+    const confirmed = window.confirm(
+      `Excluir o Espaço de gestão “${space.name}”? Todas as escalas, pessoas, links e revisões técnicas serão removidos, e este link de gestão será invalidado.`,
+    );
+    if (!confirmed) return;
+
+    setIsDeletingSpace(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`${managementApiUrl}/${encodeURIComponent(space.id)}`, {
+        method: "DELETE",
+        headers: managementRequestHeaders(managementToken, { Accept: "application/json", "Content-Type": "application/json" }),
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({})) as { error?: string };
+        if (failure.error === "deletion_record_unavailable") {
+          throw new Error("deletion_record_unavailable");
+        }
+        throw new Error("space_deletion_failed");
+      }
+
+      startAnotherSpace();
+      setMessage("Espaço de gestão excluído. O link de gestão foi invalidado.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error && deleteError.message === "deletion_record_unavailable"
+        ? "Não foi possível registrar a exclusão. O Espaço continua disponível; tente novamente mais tarde."
+        : "Não foi possível confirmar a exclusão. Atualize o Espaço para conferir o estado antes de tentar novamente.");
+    } finally {
+      setIsDeletingSpace(false);
+    }
+  }
+
   async function copyManagementLink() {
     if (!managementLink) return;
     setIsCopying(true);
@@ -591,7 +697,7 @@ function ManagementSpaceApp() {
         <div className="heading-row">
           <div>
             <p className="section-label">SUA ESCALA</p>
-            <h1 id="page-title">{isLoading ? "Abrindo espaço…" : schedule?.name ?? (isCreatingSpace ? "Organize sua primeira escala" : "Link de gestão indisponível")}</h1>
+            <h1 id="page-title">{isLoading ? "Abrindo espaço…" : schedule?.name ?? (space ? "Crie uma escala para começar" : isCreatingSpace ? "Organize sua primeira escala" : "Link de gestão indisponível")}</h1>
           </div>
           <span className="calendar-icon" aria-hidden="true">▦</span>
         </div>
@@ -679,6 +785,38 @@ function ManagementSpaceApp() {
               </div>
               <p className="form-hint">Você pode alterar o nome quando quiser.</p>
             </form>
+            <button className="danger-button" type="button" onClick={() => void deleteManagementSchedule()} disabled={isDeletingSchedule}>
+              {isDeletingSchedule ? "Excluindo escala…" : "Excluir esta escala"}
+            </button>
+          </section>
+        ) : space && managementToken ? (
+          <section className="schedule-card" aria-label="Criar escala neste Espaço">
+            <div className="card-heading">
+              <div className="calendar-tile" aria-hidden="true">▦</div>
+              <div>
+                <h2>Este Espaço ainda não tem escalas</h2>
+                <p>O link de gestão continua ativo. Crie uma escala para voltar a organizar semanas.</p>
+              </div>
+            </div>
+            <form className="rename-form" onSubmit={createScheduleInEmptySpace}>
+              <label htmlFor="empty-space-schedule-name">Nome da escala</label>
+              <input id="empty-space-schedule-name" value={emptySpaceScheduleName} onChange={(event) => setEmptySpaceScheduleName(event.target.value)} maxLength={80} required disabled={isCreatingEmptySpaceSchedule} />
+              <label htmlFor="empty-space-time-zone">Fuso horário</label>
+              <input id="empty-space-time-zone" list="brazilian-time-zones" value={emptySpaceTimeZone} onChange={(event) => setEmptySpaceTimeZone(event.target.value)} maxLength={80} required disabled={isCreatingEmptySpaceSchedule} />
+              <button className="primary-button" type="submit" disabled={isCreatingEmptySpaceSchedule}>
+                {isCreatingEmptySpaceSchedule ? "Criando escala…" : "Criar escala"}
+              </button>
+            </form>
+          </section>
+        ) : (
+          <section className="schedule-card">
+            <p className="empty-state">Abra o link privado de gestão que você guardou para recuperar o acesso de edição.</p>
+            <button className="primary-button" type="button" onClick={startAnotherSpace}>Criar outro Espaço de gestão</button>
+          </section>
+        )}
+
+        {space && managementToken && (
+          <section className="schedule-card" aria-label="Opções do Espaço de gestão">
             <form className="rename-form" onSubmit={saveManagementSpaceName}>
               <label htmlFor="management-space-name">Nome do Espaço de gestão</label>
               <div className="input-row">
@@ -710,12 +848,10 @@ function ManagementSpaceApp() {
                 {isReplacingManagementLink ? "Substituindo link…" : "Substituir link de gestão"}
               </button>
             </div>
+            <button className="danger-button" type="button" onClick={() => void deleteManagementSpace()} disabled={isDeletingSpace}>
+              {isDeletingSpace ? "Excluindo Espaço…" : "Excluir Espaço de gestão"}
+            </button>
             <button className="text-button" type="button" onClick={startAnotherSpace}>Criar outro Espaço de gestão</button>
-          </section>
-        ) : (
-          <section className="schedule-card">
-            <p className="empty-state">Abra o link privado de gestão que você guardou para recuperar o acesso de edição.</p>
-            <button className="primary-button" type="button" onClick={startAnotherSpace}>Criar outro Espaço de gestão</button>
           </section>
         )}
 

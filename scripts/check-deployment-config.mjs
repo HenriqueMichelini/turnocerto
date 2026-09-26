@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const placeholderDatabaseIds = new Set([
   "00000000-0000-4000-8000-000000000001",
   "00000000-0000-4000-8000-000000000002",
+  "00000000-0000-4000-8000-000000000003",
+  "00000000-0000-4000-8000-000000000004",
 ]);
 const freeQuotaUsageVariables = [
   "FREE_QUOTA_WORKER_REQUESTS_PER_DAY",
@@ -31,12 +33,15 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   const previewDatabase = preview?.d1_databases?.find((database) => database.binding === "DB");
   const productionDatabase = production?.d1_databases?.find((database) => database.binding === "DB");
   const defaultDatabase = config.d1_databases?.find((database) => database.binding === "DB");
+  const previewDeletionDatabase = preview?.d1_databases?.find((database) => database.binding === "DELETION_DB");
+  const productionDeletionDatabase = production?.d1_databases?.find((database) => database.binding === "DELETION_DB");
+  const defaultDeletionDatabase = config.d1_databases?.find((database) => database.binding === "DELETION_DB");
   const previewRateLimit = preview?.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
   const productionRateLimit = production?.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
   const defaultRateLimit = config.ratelimits?.find((binding) => binding.name === "CREATION_RATE_LIMITER");
 
-  if (!previewDatabase || !productionDatabase || !defaultDatabase) {
-    throw new Error("The default, preview, and production environments must define the DB binding.");
+  if (!previewDatabase || !productionDatabase || !defaultDatabase || !previewDeletionDatabase || !productionDeletionDatabase || !defaultDeletionDatabase) {
+    throw new Error("The default, preview, and production environments must define separate DB and DELETION_DB bindings.");
   }
   if (!previewRateLimit || !productionRateLimit || !defaultRateLimit) {
     throw new Error("The default, preview, and production environments must define CREATION_RATE_LIMITER.");
@@ -62,11 +67,53 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   if (previewDatabase.database_name === productionDatabase.database_name) {
     throw new Error("Preview and production must use different D1 database names.");
   }
+  if (previewDeletionDatabase.database_id === productionDeletionDatabase.database_id) {
+    throw new Error("Preview and production must use different deletion-ledger D1 database IDs.");
+  }
+  if (previewDeletionDatabase.database_name === productionDeletionDatabase.database_name) {
+    throw new Error("Preview and production must use different deletion-ledger D1 database names.");
+  }
+  if (
+    previewDatabase.database_id === previewDeletionDatabase.database_id ||
+    productionDatabase.database_id === productionDeletionDatabase.database_id
+  ) {
+    throw new Error("Each deletion ledger must use a D1 database separate from its application database.");
+  }
+  if (
+    previewDatabase.database_name === previewDeletionDatabase.database_name ||
+    productionDatabase.database_name === productionDeletionDatabase.database_name
+  ) {
+    throw new Error("Each deletion ledger must use a D1 database name separate from its application database.");
+  }
+  const environmentDatabaseIDs = [
+    previewDatabase.database_id,
+    previewDeletionDatabase.database_id,
+    productionDatabase.database_id,
+    productionDeletionDatabase.database_id,
+  ];
+  const environmentDatabaseNames = [
+    previewDatabase.database_name,
+    previewDeletionDatabase.database_name,
+    productionDatabase.database_name,
+    productionDeletionDatabase.database_name,
+  ];
+  if (new Set(environmentDatabaseIDs).size !== environmentDatabaseIDs.length) {
+    throw new Error("Preview and production application and deletion-ledger databases must all have different D1 database IDs.");
+  }
+  if (new Set(environmentDatabaseNames).size !== environmentDatabaseNames.length) {
+    throw new Error("Preview and production application and deletion-ledger databases must all have different D1 database names.");
+  }
   if (
     defaultDatabase.database_id !== productionDatabase.database_id ||
     defaultDatabase.database_name !== productionDatabase.database_name
   ) {
     throw new Error("The default API Worker environment must target the production D1 database.");
+  }
+  if (
+    defaultDeletionDatabase.database_id !== productionDeletionDatabase.database_id ||
+    defaultDeletionDatabase.database_name !== productionDeletionDatabase.database_name
+  ) {
+    throw new Error("The default API Worker environment must target the production deletion-ledger D1 database.");
   }
   if (config.vars?.WEB_ORIGIN !== production.vars?.WEB_ORIGIN) {
     throw new Error("The default API Worker environment must target the production Pages origin.");
@@ -120,6 +167,10 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
   if (requireRealId && placeholderDatabaseIds.has(selectedDatabase.database_id)) {
     throw new Error(`Configure a real ${targetEnvironment} D1 database ID before a remote operation.`);
   }
+  const selectedDeletionDatabase = targetEnvironment === "preview" ? previewDeletionDatabase : productionDeletionDatabase;
+  if (requireRealId && placeholderDatabaseIds.has(selectedDeletionDatabase.database_id)) {
+    throw new Error(`Configure a real ${targetEnvironment} deletion-ledger D1 database ID before a remote operation.`);
+  }
   const selectedEnvironment = targetEnvironment === "preview" ? preview : production;
   if (requireRealId && selectedEnvironment.vars.WEB_ORIGIN.includes("replace-me")) {
     throw new Error(`Configure the ${targetEnvironment} Pages origin before a remote operation.`);
@@ -141,7 +192,7 @@ export function checkDeploymentConfiguration(config, targetEnvironment, requireR
     }
   }
 
-  return `${targetEnvironment} is configured with an isolated D1 database.`;
+  return `${targetEnvironment} is configured with an isolated D1 application database and an isolated D1 deletion ledger.`;
 }
 
 function run() {

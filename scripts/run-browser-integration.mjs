@@ -36,6 +36,7 @@ const localQuotaUsageNames = Object.keys(apiConfig.env[targetEnvironment].vars).
 checkDeploymentConfiguration(apiConfig, targetEnvironment);
 await rm(stateDirectory, { recursive: true, force: true });
 runWrangler(["d1", "migrations", "apply", "DB", ...localArgs]);
+runWrangler(["d1", "migrations", "apply", "DELETION_DB", ...localArgs]);
 if (targetEnvironment === "preview") {
   runWrangler(["d1", "execute", "DB", ...localArgs, "--file=./db/seed-preview.sql"]);
 }

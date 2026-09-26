@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { WeekExportControls } from "./WeekExportControls";
 import type { ReadLink, ReadLinkWeekResponse, Schedule } from "./schedule-types";
 
 const weekdayNames = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
@@ -281,6 +282,9 @@ export function ReadLinkReaderApp({ apiBaseUrl, credentials }: ReaderProps) {
                 <span>{formatDate(result.week.weekStart)} a {formatDate(result.week.weekEnd)}</span>
                 <button type="button" aria-label="Próxima semana" disabled={!canGoForward || isLoading} onClick={() => setWeekStart(addCalendarDays(weekStart, 7))}>→</button>
               </div>
+              {!isLoading && result.week.weekStart === weekStart && (
+                <WeekExportControls scheduleName={result.schedule.name} week={result.week} />
+              )}
             </div>
             {result.week.people.length === 0 ? <p className="editor-empty">Não há pessoas com participação nesta semana.</p> : (
               <div className="calendar-scroll" aria-label="Programação da semana">

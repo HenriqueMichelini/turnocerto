@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { WeekExportControls } from "./WeekExportControls";
 import type { DateException, PatternDay, Person, Schedule, ScheduleEditRequest, ScheduleDay, ScheduleWeek, WorkPeriod } from "./schedule-types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -492,6 +493,9 @@ export function ScheduleEditor({
             }} />
             <button type="button" aria-label="Próxima semana" onClick={() => moveWeek(1)}>→</button>
           </div>
+          {week && !isLoadingWeek && week.weekStart === weekStart && (
+            <WeekExportControls scheduleName={selectedSchedule.name} week={week} />
+          )}
         </div>
         {isLoadingWeek ? (
           <p className="editor-empty" role="status">Abrindo a semana…</p>

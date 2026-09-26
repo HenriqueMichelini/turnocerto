@@ -191,6 +191,20 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
 .notice.error p { margin: 0; }
 .notice.error button { min-height: 36px; margin-top: 8px; padding: 0 12px; border: 1px solid #b97970; border-radius: 7px; color: #81423c; background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; }
 
+.week-export { display: flex; min-width: 0; flex-direction: column; align-items: flex-end; gap: 8px; }
+.week-export-buttons, .week-export-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.week-export-buttons button, .week-export-actions button, .week-export-error button { min-height: 38px; padding: 0 12px; border: 1px solid #28694d; border-radius: 8px; color: #fff; background: #28694d; font-size: 12px; font-weight: 700; cursor: pointer; }
+.week-export-buttons button:disabled, .week-export-actions button:disabled, .week-export-error button:disabled { opacity: .55; cursor: not-allowed; }
+.week-export-actions .week-export-cancel { color: #52645a; border-color: #dce7dd; background: #fff; }
+.week-export-warning, .week-export-error { width: min(100%, 460px); padding: 11px 12px; border: 1px solid #dfbd6a; border-radius: 8px; color: #5d4d27; background: #fff9e8; }
+.week-export-error { border-color: #d9aaa3; color: #81423c; background: #fff8f6; }
+.week-export-warning p, .week-export-error p, .week-export-progress p, .week-export-message { margin: 0; font-size: 12px; line-height: 1.5; }
+.week-export-actions { margin-top: 9px; }
+.week-export-progress { width: min(100%, 460px); color: #52645a; }
+.week-export-progress progress { display: block; width: 100%; height: 8px; margin-top: 6px; accent-color: #28694d; }
+.week-export-message { color: #28694d; }
+.week-export-error button { margin-top: 8px; border-color: #b97970; color: #81423c; background: transparent; }
+
 @media (max-width: 600px) {
   .editor-heading, .week-toolbar { align-items: flex-start; flex-direction: column; }
   .editor-schedule-picker, .editor-schedule-picker select { width: 100%; }
@@ -202,6 +216,8 @@ h2 { margin: 0 0 4px; font: 700 15px ui-sans-serif, system-ui, sans-serif; }
   .week-controls { width: 100%; flex-wrap: wrap; }
   .week-controls label { width: 100%; }
   .week-controls input { flex: 1; }
+  .week-export { width: 100%; align-items: flex-start; }
+  .week-export-warning, .week-export-error, .week-export-progress { width: 100%; box-sizing: border-box; }
   .editor-form > .primary-button { width: 100%; }
   .read-link-form { grid-template-columns: 1fr; }
   .read-link-list li { align-items: flex-start; flex-direction: column; }

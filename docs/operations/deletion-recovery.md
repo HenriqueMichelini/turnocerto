@@ -2,9 +2,11 @@
 
 `DELETION_DB` is the durable record of confirmed deletions. It is a different D1 database from `DB` in preview and production. Each row stores only a deletion scope, a Space UUID, an optional Schedule UUID, and the UTC request time. It contains no names, people, credentials, links, or work data. Keep the current deletion ledger when restoring `DB`; restoring an older copy of the ledger can reintroduce already-deleted data.
 
+Cloudflare D1 Time Travel restore overwrites the database named in the command; it does not clone a historical state into another database. The [quarterly recovery drill](recovery-drill.md) uses disposable synthetic databases and never rewinds preview or production.
+
 ## Before reopening the restored application database
 
-1. Restore the application D1 point-in-time copy into a new isolated database. Do not restore over the source database or attach the restored copy to a Worker yet.
+1. Select and independently verify the exact application database that the approved recovery operation will restore. A Time Travel restore is in-place and destructive to that database. For rehearsals, use only the disposable D1 created by [the recovery drill](recovery-drill.md); never use preview or production as the rehearsal target. Do not attach the restored database to a Worker yet.
 2. Read the complete ledger from the matching environment. For production:
 
    ```sh
@@ -13,7 +15,7 @@
    ```
 
    Use `--env preview` for preview. Confirm the query succeeds before changing the restored application database.
-3. Replay every returned row against the isolated restored database. Replace `<restored-application-database>` with the restored database's actual name or ID. Never use the production or preview source database name here.
+3. Replay every returned row against the approved restored application database. For the quarterly drill, replace `<restored-application-database>` with the disposable drill database name. Never use a production or preview database name for rehearsal writes.
 
    For a `schedule` row, run:
 

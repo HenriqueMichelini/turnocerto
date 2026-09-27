@@ -26,11 +26,14 @@ test("a teammate can rename the preview schedule and see the saved name after re
 
   const title = page.getByRole("heading", { level: 1 });
   await expect(title).toBeVisible();
+  await expect(title).not.toHaveText("Carregando escala…");
+  await expect(title).not.toHaveText("Escala indisponível");
   const originalName = (await title.innerText()).trim();
   expect(originalName).not.toBe("Escala indisponível");
   await expect(page.getByText("Espaço de demonstração")).toBeVisible();
 
   const name = page.getByRole("textbox", { name: "Nome da escala" });
+  await expect(name).toHaveValue(originalName);
   const renamed = `Plantão de sábado ${Date.now()}`;
   await name.fill(renamed);
   await page.getByRole("button", { name: "Salvar nome" }).click();

@@ -40,6 +40,8 @@ For example, the temporary config has this shape. Replace the names, IDs, and mi
 
 Keep the temporary config and command output private until the drill record is sanitized. It contains database identifiers, not secrets.
 
+The verification SQL uses a `VALUES` CTE so it stays within Cloudflare D1's compound-select limit. Run each verification file with `--command="$(cat <file>)" --json`; `--file` executes the assertions but Wrangler does not print their result rows. Keep all output private until it has been sanitized.
+
 ## Drill procedure
 
 1. Open a drill record from the template below. Note the start time in UTC and BRT, operator, independent reviewer, Wrangler version, and current commit. Capture a read-only inventory with `npx wrangler d1 list`. Create two uniquely named D1 databases and record the names and IDs returned by Wrangler:
@@ -76,7 +78,7 @@ Keep the temporary config and command output private until the drill record is s
    npx wrangler d1 execute DB --config <temporary-config> --remote --command "SELECT updated_at FROM schedules WHERE id = '20000000-0000-4000-8000-000000000001'"
    npx wrangler d1 execute DELETION_DB --config <temporary-config> --remote --file=./db/recovery-drill/seed-deletion-ledger.sql
    npx wrangler d1 execute DB --config <temporary-config> --remote --file=./db/recovery-drill/simulate-deletions.sql
-   npx wrangler d1 execute DB --config <temporary-config> --remote --file=./db/recovery-drill/verify-deletions.sql
+   npx wrangler d1 execute DB --config <temporary-config> --remote --command="$(cat ./db/recovery-drill/verify-deletions.sql)" --json
    ```
 
    Query the ledger with `SELECT scope, count(*) FROM deletion_records GROUP BY scope ORDER BY scope` and record counts only. The deleted targets should be absent from the application D1 and present in the ledger. The post-bookmark Schedule edit, saved Space, management credential hash, and read-link hash should remain present.
@@ -84,7 +86,7 @@ Keep the temporary config and command output private until the drill record is s
 
    ```sh
    npx wrangler d1 time-travel restore DB --config <temporary-config> --bookmark=<bookmark-from-step-3>
-   npx wrangler d1 execute DB --config <temporary-config> --remote --file=./db/recovery-drill/verify-restored-before-replay.sql
+   npx wrangler d1 execute DB --config <temporary-config> --remote --command="$(cat ./db/recovery-drill/verify-restored-before-replay.sql)" --json
    ```
 
    Wrangler Time Travel restore is destructive to the named database. Stop if the selected ID is not the disposable application D1. Do not point this command at preview or production. Before replay, verify the old deleted Schedule, Space, management hash, and read-link hash have returned in the isolated database; do not connect a Worker or serve this state.
@@ -103,7 +105,7 @@ Keep the temporary config and command output private until the drill record is s
 7. Verify target absence and saved-data availability:
 
    ```sh
-   npx wrangler d1 execute DB --config <temporary-config> --remote --file=./db/recovery-drill/verify-after-replay.sql
+   npx wrangler d1 execute DB --config <temporary-config> --remote --command="$(cat ./db/recovery-drill/verify-after-replay.sql)" --json
    npx wrangler d1 migrations list DB --config <temporary-config> --remote
    ```
 
@@ -125,8 +127,9 @@ Use the drill and each higher-risk migration to check the migration compatibilit
 
 - Apply numbered migrations in order to a fresh disposable database and to the disposable database already at the prior schema. Retain existing data and ensure the old deployed Worker can still read and write while the new schema is present. Schema changes must remain additive during the manual rollout window.
 - On preview, apply migrations first, deploy the Go API Worker, then deploy the static Pages build. Run the deployed preview smoke and record its deployment IDs and result. Preview and production D1 and deletion-ledger IDs must remain distinct.
+- If the configured preview database has synthetic or potentially user-modified rows, or the preview deletion-ledger ID is not real, preserve that environment. Use a separate candidate preview with fresh app and deletion-ledger D1s, a uniquely named Worker, and a unique Pages branch. The temporary Worker config must bind only the candidate D1s. Record the actual Pages branch alias Wrangler reports and set the candidate Worker origin to that exact hostname. Pause creation when quota measurements or Turnstile configuration are unavailable; scope the smoke to read/rename and explicitly leave creation unverified.
 - Promote manually only after review of the preview migration and smoke evidence. Apply the same reviewed migration set to production, deploy the Go API Worker, and then promote the Pages build. Production migration and deployment are not part of this drill.
-- Validate rollback on preview by rolling the API Worker back to its known-good version and restoring the prior Pages deployment. Confirm the old code operates against the additive schema. Worker rollback does not reverse D1 migrations; use a forward migration for schema corrections. Application-data recovery is a separate operation and must reapply the current deletion ledger before any restored data is exposed.
+- Validate rollback on preview by rolling the API Worker back to its known-good version and restoring the prior Pages deployment. Restore the previous Pages build through the dashboard or redeploy the exact saved static bundle to the same candidate branch. Confirm the old code operates against the additive schema. Worker rollback does not reverse D1 migrations; use a forward migration for schema corrections. Application-data recovery is a separate operation and must reapply the current deletion ledger before any restored data is exposed.
 
 Use the Cloudflare steps in [`cloudflare-preview.md`](cloudflare-preview.md) for preview deployment and rollback. If the preview promotion or rollback is not actually run and checked, record it as unverified; a local build or SQL drill is not proof.
 
@@ -158,4 +161,4 @@ Copy this table to the access-controlled operational record for each run:
 | Failures, external waits, and evidence location | |
 | Cleanup verified by reviewer | |
 
-**Current rehearsal status (2026-09-26):** remote disposable D1 restore and deletion replay, and preview promotion/rollback, were not run. Wrangler is unauthenticated in the available environment, and the configured deletion-ledger IDs are placeholders. No recovery target or production data was changed. SQL-level credential absence is covered by the local fixture, but has not been demonstrated against D1. The 24-hour data-loss target and 24-working-hour recovery target were not demonstrated and are unmet for this rehearsal; the deployed promotion/rollback path also remains unverified.
+**Current rehearsal status (2026-09-27):** see the sanitized [recovery drill record](recovery-drill-record-2026-09-27.md). The disposable D1 Time Travel restore, deletion-ledger replay, saved-data checks, and isolated candidate preview promotion/rollback were run. The RPO sample was below 24 hours. The drill ran on Sunday outside the documented weekday window, so its 24-working-hour RTO target is not demonstrated. The configured preview still has a placeholder deletion-ledger ID and no current quota snapshot; its potentially modified synthetic fixture was preserved. Production migrations and deployment were not run.

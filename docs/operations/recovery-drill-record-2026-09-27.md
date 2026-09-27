@@ -1,6 +1,6 @@
 # D1 recovery drill record — 2026-09-27
 
-Status: **disposable restore/replay and isolated candidate promotion/rollback passed**. Cleanup is pending an independent target review. No live preview or production D1 was restored, migrated, or seeded; the existing preview Worker binding was left as configured. The exact disposable D1 names and IDs remain in the parent-reviewed operational record rather than this repository file.
+Status: **disposable restore/replay, isolated candidate promotion/rollback, and reviewed cleanup passed**. No live preview or production D1 was restored, migrated, or seeded; the existing preview Worker binding was left as configured. The exact disposable D1 names and IDs remain in the parent-reviewed operational record rather than this repository file.
 
 ## Run details
 
@@ -44,4 +44,4 @@ The original browser smoke could capture the visible loading heading before the 
 
 ## Cleanup and evidence handling
 
-Cleanup has not run. The parent reviewer has the exact D1 names/IDs and is reviewing the cleanup target list separately. This sanitized record omits D1 identifiers and all credential material. Temporary configs, token files, raw command output, and the candidate-only preview token are outside the repository and must be removed as part of reviewed cleanup. The named live preview and production resources are excluded from cleanup.
+Cleanup was verified on 2026-09-27 after independent target review. The five disposable D1s, candidate Worker, and all five candidate Pages deployments were deleted. Final authenticated inventory contained only the existing `turnocerto-preview` and `turnocerto-production` D1s; the existing `preview` Pages deployment remained; and the exact candidate Worker Script lookup returned not found. The named live preview and production resources were excluded from cleanup. Temporary configs, helper scripts, generated candidate token/hash, and local drill artifacts were removed from `/tmp`; the Vault token file was not modified.

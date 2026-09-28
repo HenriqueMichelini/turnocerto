@@ -3,6 +3,7 @@ package schedule
 import "time"
 
 const freeQuotaAdmissionThresholdPercent int64 = 80
+const freeQuotaD1ReadAdmissionThresholdPercent int64 = 50
 const quotaSnapshotMaximumAge = 3 * time.Hour
 
 // FreeQuotaUsage contains only numeric account or resource totals from
@@ -32,7 +33,7 @@ func (usage FreeQuotaUsage) ApproachingFreeLimit() bool {
 		atFreeQuotaThreshold(usage.PagesBuildsPerMonth, 500) ||
 		atFreeQuotaThreshold(usage.PagesAssetFiles, 20_000) ||
 		atFreeQuotaThreshold(usage.PagesProjectCount, 100) ||
-		atFreeQuotaThreshold(usage.D1RowsReadPerDay, 5_000_000) ||
+		atFreeQuotaThresholdPercent(usage.D1RowsReadPerDay, 5_000_000, freeQuotaD1ReadAdmissionThresholdPercent) ||
 		atFreeQuotaThreshold(usage.D1RowsWrittenPerDay, 100_000) ||
 		atFreeQuotaThreshold(usage.D1LargestDatabaseBytes, 500_000_000) ||
 		atFreeQuotaThreshold(usage.D1AccountStorageBytes, 5_000_000_000) ||
@@ -40,10 +41,14 @@ func (usage FreeQuotaUsage) ApproachingFreeLimit() bool {
 }
 
 func atFreeQuotaThreshold(usage, limit int64) bool {
+	return atFreeQuotaThresholdPercent(usage, limit, freeQuotaAdmissionThresholdPercent)
+}
+
+func atFreeQuotaThresholdPercent(usage, limit, thresholdPercent int64) bool {
 	if usage < 0 || limit <= 0 {
 		return true
 	}
-	threshold := (limit*freeQuotaAdmissionThresholdPercent + 99) / 100
+	threshold := (limit*thresholdPercent + 99) / 100
 	return usage >= threshold
 }
 

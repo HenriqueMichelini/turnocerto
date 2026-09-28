@@ -8,3 +8,9 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
+
+if (import.meta.env.VITE_CAPACITY_BENCHMARK === "true") {
+  void import("./launch-capacity-benchmark").then(({ startLaunchCapacityBenchmark }) => {
+    startLaunchCapacityBenchmark();
+  });
+}

@@ -12,7 +12,7 @@ Do not deploy a remote environment with blank quota snapshots. The deployment co
 
 ## Sources, Free ceilings, and admission thresholds
 
-The thresholds are 80% of the currently documented Free ceilings. The Go admission check compares the operator's measured numeric snapshot with these limits on every creation request. The numbers below were checked against Cloudflare's official documentation on 2026-09-26; verify the source pages again before changing a ceiling or adjusting the percentage.
+The default threshold is 80% of each documented Free ceiling. The local #11 code currently uses a provisional 50% D1 rows-read threshold (2.5 million rows/day), based on the synthetic 100-Person stress projection. It has not been validated against daily Cloudflare usage history and has not been verified in a remote deployment. Keep this margin provisional until the operator compares it with measured account history and confirms the remote runtime setting. The Go admission check compares the operator's measured numeric snapshot with these limits on every creation request. The quota ceilings below were checked against Cloudflare's official documentation on 2026-09-28; verify the source pages again before changing a ceiling or adjusting the percentage.
 
 | Product and observation | Free ceiling | Pause threshold | Cloudflare source |
 | --- | ---: | ---: | --- |
@@ -22,7 +22,7 @@ The thresholds are 80% of the currently documented Free ceilings. The Go admissi
 | Pages builds in the current month | 500/month | 400 | [Pages limits](https://developers.cloudflare.com/pages/platform/limits/) |
 | Files in the Pages project | 20,000 | 16,000 | [Pages limits](https://developers.cloudflare.com/pages/platform/limits/) |
 | Pages projects in the account | 100 | 80 | [Pages limits](https://developers.cloudflare.com/pages/platform/limits/) |
-| D1 rows read by the account in the current UTC day | 5,000,000/day | 4,000,000 | [D1 pricing and usage](https://developers.cloudflare.com/d1/platform/pricing/) |
+| D1 rows read by the account in the current UTC day | 5,000,000/day | 2,500,000 (provisional local code threshold) | [D1 pricing and usage](https://developers.cloudflare.com/d1/platform/pricing/) |
 | D1 rows written by the account in the current UTC day | 100,000/day | 80,000 | [D1 pricing and usage](https://developers.cloudflare.com/d1/platform/pricing/) |
 | Largest D1 database storage | 500,000,000 bytes | 400,000,000 bytes | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
 | Total D1 account storage | 5,000,000,000 bytes | 4,000,000,000 bytes | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
@@ -45,7 +45,7 @@ Enter the observed usage, not the ceiling, in these variables:
 | `FREE_QUOTA_D1_ACCOUNT_STORAGE_BYTES` | Current total D1 storage for the account |
 | `FREE_QUOTA_D1_DATABASE_COUNT` | Current account D1 database count |
 
-The percentage is the admission margin in `backend/internal/schedule/quota.go`. The maintainer adjusts it in a reviewable code change, updates the threshold table and crossing tests, and cites the observed Cloudflare history behind the new margin. Do not change a measured usage value to make admission pass. Production deployment checks reject missing or stale snapshots; the Go gate also rejects missing values and snapshots older than three hours or from a previous UTC day.
+The code margins are in `backend/internal/schedule/quota.go`: 80% for all resources except the provisional 50% D1 rows-read threshold. That D1 value is based on the 100-Person stress projection in [the launch capacity record](launch-capacity.md), not Cloudflare history, and is not proof that a 50% margin is sufficient for the real account. Before adopting or changing it in a remote environment, record the observed Cloudflare usage history and review the projected workload. Do not change a measured usage value to make admission pass. Production deployment checks reject missing or stale snapshots; the Go gate also rejects missing values and snapshots older than three hours or from a previous UTC day.
 
 In the Cloudflare dashboard, inspect each account Worker under **Workers & Pages** and sum its current-day incoming requests; include **Functions Metrics** for any Pages project that has Functions. Use the higher upper-quantile CPU value from the production and preview API Workers. Inspect all Pages projects for monthly build totals, and the `turnocerto` project for its file count. For D1, inspect **Billing → Billable Usage** for account-wide rows read and written; open each account D1 database and select **Metrics → Row Metrics** for its storage, then record the largest database value and the account total. Cloudflare documents the D1 dashboard and GraphQL metrics in [D1 metrics and analytics](https://developers.cloudflare.com/d1/observability/metrics-analytics/) and [D1 billing](https://developers.cloudflare.com/d1/observability/billing/).
 

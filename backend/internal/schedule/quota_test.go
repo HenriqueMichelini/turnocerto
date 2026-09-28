@@ -13,14 +13,14 @@ func TestFreeQuotaAdmissionThresholdCrossingsUseObservedUsage(t *testing.T) {
 		usage schedule.FreeQuotaUsage
 		want  bool
 	}{
-		{name: "below all limits", usage: schedule.FreeQuotaUsage{WorkerRequestsPerDay: 79_999, WorkerHighQuantileCPUMS: 7, WorkerCount: 79, PagesBuildsPerMonth: 399, PagesAssetFiles: 15_999, PagesProjectCount: 79, D1RowsReadPerDay: 3_999_999, D1RowsWrittenPerDay: 79_999, D1LargestDatabaseBytes: 399_999_999, D1AccountStorageBytes: 3_999_999_999, D1DatabaseCount: 7}, want: false},
+		{name: "below all limits", usage: schedule.FreeQuotaUsage{WorkerRequestsPerDay: 79_999, WorkerHighQuantileCPUMS: 7, WorkerCount: 79, PagesBuildsPerMonth: 399, PagesAssetFiles: 15_999, PagesProjectCount: 79, D1RowsReadPerDay: 2_499_999, D1RowsWrittenPerDay: 79_999, D1LargestDatabaseBytes: 399_999_999, D1AccountStorageBytes: 3_999_999_999, D1DatabaseCount: 7}, want: false},
 		{name: "worker request threshold", usage: schedule.FreeQuotaUsage{WorkerRequestsPerDay: 80_000}, want: true},
 		{name: "worker CPU threshold", usage: schedule.FreeQuotaUsage{WorkerHighQuantileCPUMS: 8}, want: true},
 		{name: "worker inventory threshold", usage: schedule.FreeQuotaUsage{WorkerCount: 80}, want: true},
 		{name: "Pages build threshold", usage: schedule.FreeQuotaUsage{PagesBuildsPerMonth: 400}, want: true},
 		{name: "Pages assets threshold", usage: schedule.FreeQuotaUsage{PagesAssetFiles: 16_000}, want: true},
 		{name: "Pages project threshold", usage: schedule.FreeQuotaUsage{PagesProjectCount: 80}, want: true},
-		{name: "D1 read threshold", usage: schedule.FreeQuotaUsage{D1RowsReadPerDay: 4_000_000}, want: true},
+		{name: "provisional D1 read threshold stops at half of the Free ceiling", usage: schedule.FreeQuotaUsage{D1RowsReadPerDay: 2_500_000}, want: true},
 		{name: "D1 write threshold", usage: schedule.FreeQuotaUsage{D1RowsWrittenPerDay: 80_000}, want: true},
 		{name: "largest D1 database threshold", usage: schedule.FreeQuotaUsage{D1LargestDatabaseBytes: 400_000_000}, want: true},
 		{name: "D1 account storage threshold", usage: schedule.FreeQuotaUsage{D1AccountStorageBytes: 4_000_000_000}, want: true},

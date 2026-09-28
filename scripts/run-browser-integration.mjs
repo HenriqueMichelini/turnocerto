@@ -24,7 +24,14 @@ const apiUrl = "http://127.0.0.1:8787";
 const frontendUrl = "http://127.0.0.1:8788";
 const turnstileTestSiteKey = "1x00000000000000000000AA";
 const turnstileTestSecretKey = "1x0000000000000000000000000000000AA";
-const stateDirectory = resolve(repositoryRoot, `.wrangler/e2e-${targetEnvironment}-state`);
+const configuredStateDirectory = process.env.TURNOCERTO_E2E_STATE_DIRECTORY;
+const stateDirectory = resolve(
+  repositoryRoot,
+  configuredStateDirectory ?? `.wrangler/e2e-${targetEnvironment}-state`,
+);
+if (!stateDirectory.startsWith(`${resolve(repositoryRoot, ".wrangler")}/`)) {
+  throw new Error("TURNOCERTO_E2E_STATE_DIRECTORY must point inside the repository .wrangler directory.");
+}
 const localArgs = ["--config", apiConfigPath, "--env", targetEnvironment, "--local", "--persist-to", stateDirectory];
 const runWrangler = (args) =>
   execFileSync(process.execPath, [wranglerCli, ...args], { cwd: repositoryRoot, stdio: "inherit" });
